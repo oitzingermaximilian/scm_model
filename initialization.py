@@ -39,15 +39,17 @@ def build_base_model(data_dict):
         doc="Standalone removal technologies",
     )
 
-    # Replaced sink_blocks with sink_type (storage technologies)
-    m.sink_type = pyo.Set(
-        initialize=data_dict["storage_tech"], doc="Geological sink and storage types"
+    m.storage_types = pyo.Set(
+        initialize=data_dict["storage_types"], doc="Geological sink and storage types"
+    )
+
+    m.sink_blocks = pyo.Set(
+        initialize=data_dict["sink_blocks"], doc="Project-specific geological sink blocks"
     )
 
     # ==========================================
     # 2. PARAMETERS
     # ==========================================
-    # General Parameters
     m.g = pyo.Param(
         m.y,
         initialize=data_dict["g"],
@@ -55,28 +57,36 @@ def build_base_model(data_dict):
         doc="Geologically stored fraction (%)",
     )
     m.psi = pyo.Param(
+        m.y,
         initialize=data_dict["psi"],
         default=0,
         doc="Carbon intensity factor of natural gas",
     )
     m.eta = pyo.Param(
-        default=1, doc="General transport and injection efficiency factor"
+        initialize=0.9,
+        doc="Universal transmission/injection loss efficiency factor"
     )
 
-    # Flows and Tech Specs
+    # Baseline Energy Flows
     m.f_NG_intern = pyo.Param(
-        m.region,
-        m.region,
-        m.sector,
-        m.y,
-        default=0,
-        doc="Pregiven natural gas flow i to j for s",
+        m.region, m.region, m.sector, m.y,
+        initialize=data_dict["f_NG_intern"],
+        default=0.0,
+        doc="Bilateral natural gas flows by sector"
     )
     m.f_NG_import = pyo.Param(
-        m.region, m.sector, m.y, default=0, doc="Pregiven natural gas flow to i for s"
+        m.region, m.sector, m.y,
+        initialize=data_dict["f_NG_import"],
+        default=0.0,
+        doc="Domestic NG usage or external imports by sector"
     )
+
     m.mu = pyo.Param(
-        m.sector, m.tech, default=0, doc="Max technological capture rate"
+        m.sector,
+        m.tech,
+        initialize=data_dict["mu"],
+        default=0.0,
+        doc="Max technological capture rate",
     )
     m.rho = pyo.Param(
         m.sector,
@@ -85,48 +95,71 @@ def build_base_model(data_dict):
         doc="Max deployment penetration limit per sector/year",
     )
 
-    # Sinks (Regional potentials/rates with uniform types)
+    # Sink Parameters
     m.sink_timedelay = pyo.Param(
-        m.region, m.sink_type, default=0, doc="Time delay for sink development"
+        m.region,
+        m.sink_blocks,
+        initialize=data_dict["sink_timedelay"],
+        default=0,
+        doc="Time delay for sink development",
     )
     m.sink_injection_rate = pyo.Param(
-        m.region, m.sink_type, default=0, doc="Max annual injection rate"
+        m.region,
+        m.sink_blocks,
+        initialize=data_dict["sink_injection_rate"],
+        default=0.0,
+        doc="Max annual injection rate (tonnes)",
     )
     m.sink_block_cap = pyo.Param(
         m.region,
-        m.sink_type,
-        default=0,
-        doc="Absolute cumulative storage capacity",
+        m.sink_blocks,
+        initialize=data_dict["sink_block_cap"],
+        default=0.0,
+        doc="Absolute cumulative storage capacity (tonnes)",
+    )
+    m.c_sink_capex = pyo.Param(
+        m.region,
+        m.sink_blocks,
+        m.y,
+        initialize=data_dict["c_sink_capex"],
+        default=0.0,
+        doc="Storage total capital cost (€)",
+    )
+    m.c_inj_opex = pyo.Param(
+        m.region,
+        m.sink_blocks,
+        m.y,
+        initialize=data_dict["c_sink_opex"],
+        default=0.0,
+        doc="Distance-adjusted sink injection & transport OPEX (€/tCO2)",
     )
 
-    # Costs & Economics (Uniform across regions -> Region index removed)
+    # Costs & Economics
     m.c_ETS = pyo.Param(
         m.y, initialize=data_dict["c_ETS"], doc="Exogenous EU-ETS CO2 price"
     )
-    m.c_sink_capex = pyo.Param(
-        m.sink_type,
-        m.y,
-        initialize=data_dict["storage_capex_low"],
-        doc="Storage capital cost (Uniform, Base = Low)",
-    )
-    m.c_inj_opex = pyo.Param(
-        m.sink_type,
-        m.y,
-        initialize=data_dict["storage_opex"],
-        doc="Injection operational cost (Uniform)",
-    )
     m.c_cap_opex = pyo.Param(
-        m.sector, m.tech, m.v,
+        m.sector,
+        m.tech,
+        m.y,
         initialize=data_dict["c_cap_opex"],
-        doc="Operational cost for capture (Uniform)"
+        default=0.0,
+        doc="Operational cost for capture",
     )
     m.c_cap_capex = pyo.Param(
-        m.sector, m.tech, m.y,
+        m.sector,
+        m.tech,
+        m.y,
         initialize=data_dict["c_cap_capex"],
-        doc="Investment cost for capture capacity (Uniform)"
+        default=0.0,
+        doc="Investment cost for capture capacity",
     )
     m.c_trans = pyo.Param(
-        m.region, m.region, default=0, doc="Unit cost for transporting CO2"
+        m.region,
+        m.region,
+        initialize=data_dict["c_trans"],
+        default=0.0,
+        doc="Inter-regional onshore transport cost (€/tCO2)"
     )
 
     # Expansion Limits
@@ -158,34 +191,27 @@ def build_base_model(data_dict):
     # ==========================================
     # 3. VARIABLES
     # ==========================================
-    # Total System Cost (Global scalar for the objective)
     m.costs = pyo.Var(domain=pyo.Reals, doc="Aggregated total system costs")
 
-    # Granular Cost Distributions
     m.cost_capture = pyo.Var(
-        m.region,
-        m.sector,
-        m.y,
+        m.region, m.sector, m.y,
         domain=pyo.Reals,
         doc="Capture CAPEX/OPEX by region, sector, year",
     )
     m.cost_ets = pyo.Var(
-        m.region,
-        m.sector,
-        m.y,
+        m.region, m.sector, m.y,
         domain=pyo.Reals,
         doc="EU-ETS penalty by region, sector, year",
     )
-
-    # Transport and Sinks are regional
     m.cost_transport = pyo.Var(
-        m.region,
-        m.y,
+        m.region, m.y,
         domain=pyo.Reals,
         doc="Transport costs originating from region i per year",
     )
     m.cost_sink = pyo.Var(
-        m.region, m.y, domain=pyo.Reals, doc="Sink CAPEX/OPEX in region i per year"
+        m.region, m.y,
+        domain=pyo.Reals,
+        doc="Sink CAPEX/OPEX in region i per year"
     )
 
     # Physical CO2 Flows
@@ -193,23 +219,17 @@ def build_base_model(data_dict):
         m.region, m.sector, m.tech, m.v, m.y, domain=pyo.NonNegativeReals
     )
     m.q_CO2_ETS = pyo.Var(
-        m.region,
-        m.sector,
-        m.y,
+        m.region, m.sector, m.y,
         domain=pyo.NonNegativeReals,
         doc="Residual CO2 emissions for EU-ETS",
     )
     m.q_CO2_trans = pyo.Var(
-        m.region,
-        m.region,
-        m.y,
+        m.region, m.region, m.y,
         domain=pyo.NonNegativeReals,
         doc="Physical CO2 transported",
     )
     m.q_CO2_inj = pyo.Var(
-        m.region,
-        m.sink_type,
-        m.y,
+        m.region, m.sink_blocks, m.y,
         domain=pyo.NonNegativeReals,
         doc="Physical CO2 injected",
     )
@@ -223,33 +243,23 @@ def build_base_model(data_dict):
 
     # Capacity and Sinks
     m.Q_cap = pyo.Var(
-        m.region,
-        m.sector,
-        m.tech,
-        m.y,
+        m.region, m.sector, m.tech, m.y,
         domain=pyo.NonNegativeReals,
         doc="Installed, active capture capacity",
     )
     m.Q_new = pyo.Var(
-        m.region,
-        m.sector,
-        m.tech,
-        m.y,
+        m.region, m.sector, m.tech, m.y,
         domain=pyo.NonNegativeReals,
         doc="Endogenous addition of new capture capacity",
     )
 
     m.sink_bdv = pyo.Var(
-        m.region,
-        m.sink_type,
-        m.y,
+        m.region, m.sink_blocks, m.y,
         domain=pyo.Binary,
         doc="1 if development of sink starts in year t",
     )
     m.sink_active_cap = pyo.Var(
-        m.region,
-        m.sink_type,
-        m.y,
+        m.region, m.sink_blocks, m.y,
         domain=pyo.NonNegativeReals,
         doc="Active annual injection capacity",
     )

@@ -56,7 +56,7 @@ if __name__ == "__main__":
     scenarios_registry = {
         "base": None,
         "high_ets": scenarios.scenario_high_ets,
-        "low_quota": scenarios.scenario_low_quota,
+        "low_quota": scenarios.scenario_low_ets,
     }
 
     if args.scenario == "all":
