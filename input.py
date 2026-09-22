@@ -45,6 +45,7 @@ def prepare_model_data(raw_data):
         "Industry_iron_steel",
         "Industry_chemicals",
         "Industry_refining",
+        "Industry_other",
         "Power",
         "Building",
         "Transport",
@@ -58,6 +59,7 @@ def prepare_model_data(raw_data):
         "rho_iron_steel": "Industry_iron_steel",
         "rho_power": "Power",
         "rho_buildings": "Building",
+        "rho_otherindustries": "Industry_other",
     }
 
     model_data["region"] = ["NO", "UK", "EU27"]
@@ -82,6 +84,7 @@ def prepare_model_data(raw_data):
         "psc_chemicals",
         "psc_refining",
         "psc_power",
+        "psc_otherindustry"
     ]
 
     df_psc["technology_k"] = df_psc["technology_k"].astype(str).str.strip()
@@ -182,12 +185,29 @@ def prepare_model_data(raw_data):
     df_ng["year"] = df_ng["year"].astype(int)
     df_ng["ng_volume"] = pd.to_numeric(df_ng["ng_volume"], errors="coerce").fillna(0.0)
 
-    # Industrial sub-sector split weights
-    industry_splits = { #TODO THIS NEED TO BE CHECKED AND CHANGED TO A TIMESERIES FOR EVERY NODE
-        "Industry_cement": 0.15,
-        "Industry_iron_steel": 0.25,
-        "Industry_chemicals": 0.30,
-        "Industry_refining": 0.30,
+    # Industrial sub-sector split weights by region
+    industry_splits = {
+        "EU27": {
+            "Industry_cement": 0.0727,  # 7.27%
+            "Industry_iron_steel": 0.0877,  # 8.77%
+            "Industry_chemicals": 0.2161,  # 21.61%
+            "Industry_refining": 0.0863,  # 8.63% (Now included!)
+            "Industry_other": 0.5372  # 53.72%
+        },
+        "UK": {
+            "Industry_cement": 0.0849,      # 8.49% (50% of Mineral products: 6,284 / 73,989)
+            "Industry_iron_steel": 0.0516,  # 5.16% (3,818 / 73,989)
+            "Industry_chemicals": 0.1221,   # 12.21% (9,034 / 73,989)
+            "Industry_refining": 0.0662,    # 6.62% (Petroleum refineries energy use: 4,900 / 73,989)
+            "Industry_other": 0.6751        # 67.51% (Remaining manufacturing, food, paper, construction, etc.)
+        },
+        "NO": {
+            "Industry_cement": 0.1010,      # 10.10% (50% of Non-metallic minerals: 252.06 / 2495.14)
+            "Industry_iron_steel": 0.0136,  # 1.36% (34.05 / 2495.14)
+            "Industry_chemicals": 0.2952,   # 29.52% (736.67 / 2495.14)
+            "Industry_refining": 0.0011,    # 0.11% (Refineries energy use: 2.83 / 2495.14)
+            "Industry_other": 0.5890        # 58.90% (Rest: Food, paper, non-ferrous metals, construction, etc.)
+        }
     }
 
     raw_ng_lookup = {}
@@ -199,13 +219,16 @@ def prepare_model_data(raw_data):
         vol = float(row["ng_volume"])
 
         if sec.lower() == "industry":
-            for sub_sec, frac in industry_splits.items():
+            # Get the splits for the specific region, fallback to EU27 if missing
+            region_splits = industry_splits.get(i, industry_splits["EU27"])
+
+            for sub_sec, frac in region_splits.items():
                 raw_ng_lookup[(i, j, sub_sec, yr)] = (
-                    raw_ng_lookup.get((i, j, sub_sec, yr), 0.0) + vol * frac
+                        raw_ng_lookup.get((i, j, sub_sec, yr), 0.0) + vol * frac
                 )
         else:
             raw_ng_lookup[(i, j, sec, yr)] = (
-                raw_ng_lookup.get((i, j, sec, yr), 0.0) + vol
+                    raw_ng_lookup.get((i, j, sec, yr), 0.0) + vol
             )
 
     known_ng_years = sorted(df_ng["year"].unique())

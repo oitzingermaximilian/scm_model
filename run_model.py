@@ -34,18 +34,45 @@ def execute_scenario(scenario_name, scenario_func):
     model_data = prepare_model_data(raw_data)
 
     # Step 4: Build model
-    # 2. FIXED: Pass model_data instead of raw_data
     base_model = build_base_model(model_data)
     final_model = apply_constraints(base_model)
 
+    # Fetch duals (shadow prices)
+    final_model.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
+
     print("Solving model with Gurobi...")
     solver = pyo.SolverFactory("gurobi")
+    solver.options['MIPGap'] = 1e-6
+
+    # --- INITIAL MIP SOLVE ---
     results = solver.solve(final_model, tee=True)
 
     if results.solver.termination_condition == pyo.TerminationCondition.optimal:
+        print("\nOptimal MIP found. Fixing binaries to extract dual variables...")
+
+        # ==========================================
+        # FIX-AND-RELAX PROCEDURE
+        # ==========================================
+        # 1. Fix all binary/integer variables to their optimal values
+        for v in final_model.component_data_objects(ctype=pyo.Var):
+            if v.domain in (pyo.Binary, pyo.Integers, pyo.NonNegativeIntegers):
+                if v.value is not None:
+                    v.fix(round(v.value))
+                else:
+                    v.fix(0)
+                # Relax domain to Continuous so Gurobi treats it as an LP
+                v.domain = pyo.Reals
+
+        # 2. Re-solve the model as a pure LP
+        solver.solve(final_model, tee=False)
+        print("LP re-solve complete. Dual variables generated.")
+        # ==========================================
+
+        # Export results (now containing duals)
         result_dir = os.path.join("results", scenario_name)
         os.makedirs(result_dir, exist_ok=True)
         out_path = os.path.join(result_dir, f"SCM_RESULTS_{scenario_name}.xlsx")
+
         export_results(final_model, output_filename=out_path)
         print(f"SUCCESS: Results saved to {out_path}")
     else:

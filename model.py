@@ -1,6 +1,5 @@
 import pyomo.environ as pyo
 
-
 def apply_constraints(m, discount_rate=0.05):
     # ==========================================
     # EXTRACT PARAMETERS TO BYPASS PYOMO BUGS
@@ -13,15 +12,6 @@ def apply_constraints(m, discount_rate=0.05):
     dict_inj_opex = m.c_inj_opex.extract_values()
 
     base_year = m.y.first()
-
-    # ==========================================
-    # NEW VARIABLE: Idle / Inactive Capacity
-    # ==========================================
-    m.Q_idle = pyo.Var(
-        m.region, m.sector, m.tech, m.y,
-        domain=pyo.NonNegativeReals,
-        doc="Inactive capacity (stranded assets) when emissions drop"
-    )
 
     # ==========================================
     # Cost Distributions & Objective (with Discounting)
@@ -74,7 +64,7 @@ def apply_constraints(m, discount_rate=0.05):
     m.Obj = pyo.Objective(expr=m.costs, sense=pyo.minimize)
 
     # ==========================================
-    # Constraints
+    # CSU OBLIGATION & SPLIT BALANCE
     # ==========================================
     @m.Constraint(m.region, m.y)
     def csu_obligation(m, i, t):
@@ -84,37 +74,37 @@ def apply_constraints(m, discount_rate=0.05):
         return m.g[t] * ng_sum * m.psi[t] <= m.CSU_use[i, t]
 
     @m.Constraint(m.region, m.y)
-    def csu_balance(m, i, t):
+    def csu_total_use(m, i, t):
+        """The total obligation is met by summing the local and bought streams."""
+        return m.CSU_use[i, t] == m.CSU_use_local[i, t] + m.CSU_use_bought[i, t]
+
+    @m.Constraint(m.region, m.y)
+    def csu_local_balance(m, i, t):
+        """Local generation can be banked, used locally, or sold."""
         if t == base_year:
-            # No previous year to draw from; starting balance is 0
-            return (
-                    m.CSU_balance[i, t]
-                    == m.CSU_generate[i, t]
-                    + m.CSU_buy[i, t]
-                    - m.CSU_sell[i, t]
-                    - m.CSU_use[i, t]
-            )
+            return m.CSU_banked_local[i, t] == m.CSU_generate[i, t] - m.CSU_use_local[i, t] - m.CSU_sell[i, t]
         else:
-            # Carry over from the previous year
-            return (
-                    m.CSU_balance[i, t]
-                    == m.CSU_balance[i, t - 1]
-                    + m.CSU_generate[i, t]
-                    + m.CSU_buy[i, t]
-                    - m.CSU_sell[i, t]
-                    - m.CSU_use[i, t]
-            )
+            return m.CSU_banked_local[i, t] == m.CSU_banked_local[i, t - 1] + m.CSU_generate[i, t] - m.CSU_use_local[i, t] - m.CSU_sell[i, t]
+
+    @m.Constraint(m.region, m.y)
+    def csu_bought_balance(m, i, t):
+        """Bought CSUs can be banked or used locally. THEY CANNOT BE SOLD."""
+        if t == base_year:
+            return m.CSU_banked_bought[i, t] == m.CSU_buy[i, t] - m.CSU_use_bought[i, t]
+        else:
+            return m.CSU_banked_bought[i, t] == m.CSU_banked_bought[i, t - 1] + m.CSU_buy[i, t] - m.CSU_use_bought[i, t]
 
     @m.Constraint(m.y)
     def csu_market_clearing(m, t):
-        return sum(m.CSU_buy[i, t] for i in m.region) == sum(
-            m.CSU_sell[i, t] for i in m.region
-        )
+        return sum(m.CSU_buy[i, t] for i in m.region) == sum(m.CSU_sell[i, t] for i in m.region)
 
     @m.Constraint(m.region, m.y)
     def csu_generation(m, i, t):
         return m.CSU_generate[i, t] == sum(m.q_CO2_inj[i, b, t] for b in m.sink_blocks)
 
+    # ==========================================
+    # CO2 NETWORK & CAPTURE
+    # ==========================================
     @m.Constraint(m.region, m.y)
     def co2_network_balance(m, i, t):
         captured = sum(
@@ -134,9 +124,9 @@ def apply_constraints(m, discount_rate=0.05):
     @m.Constraint(m.region, m.sector, m.y)
     def ets_emitter(m, i, s, t):
         emissions = (
-                            sum(m.f_NG_intern[j, i, s, t] for j in m.region if j != i)
-                            + m.f_NG_import[i, s, t]
-                    ) * m.psi[t]
+            sum(m.f_NG_intern[j, i, s, t] for j in m.region if j != i)
+            + m.f_NG_import[i, s, t]
+        ) * m.psi[t]
 
         captured = sum(
             m.q_CO2_cap[i, s, k, v, t] for k in m.tech_point for v in m.v if v <= t
@@ -146,15 +136,18 @@ def apply_constraints(m, discount_rate=0.05):
     @m.Constraint(m.region, m.sector, m.tech_point, m.y)
     def capture_limit(m, i, s, k, t):
         emissions = (
-                            sum(m.f_NG_intern[j, i, s, t] for j in m.region if j != i)
-                            + m.f_NG_import[i, s, t]
-                    ) * m.psi[t]
+            sum(m.f_NG_intern[j, i, s, t] for j in m.region if j != i)
+            + m.f_NG_import[i, s, t]
+        ) * m.psi[t]
 
         return (
-                sum(m.q_CO2_cap[i, s, k, v, t] for v in m.v if v <= t)
-                <= m.mu[s, k] * emissions
+            sum(m.q_CO2_cap[i, s, k, v, t] for v in m.v if v <= t)
+            <= m.mu[s, k] * emissions
         )
 
+    # ==========================================
+    # CAPACITY & EXPANSION
+    # ==========================================
     @m.Constraint(m.region, m.sector, m.tech, m.y)
     def cap_expansion(m, i, s, k, t):
         if t == base_year:
@@ -178,14 +171,14 @@ def apply_constraints(m, discount_rate=0.05):
         ] + (m.Q_IR_cap[i, s, k] * m.Q_new[i, s, k, t - 1])
 
     # ==========================================
-    # UPDATED: Idle Capacity Equations
+    # IDLE CAPACITY EQUATIONS
     # ==========================================
     @m.Constraint(m.region, m.sector, m.tech_point, m.y)
     def deployment_limit(m, i, s, k, t):
         emissions = (
-                            sum(m.f_NG_intern[j, i, s, t] for j in m.region if j != i)
-                            + m.f_NG_import[i, s, t]
-                    ) * m.psi[t]
+            sum(m.f_NG_intern[j, i, s, t] for j in m.region if j != i)
+            + m.f_NG_import[i, s, t]
+        ) * m.psi[t]
 
         # Only the ACTIVE capacity is bounded by the available emissions
         return (m.Q_cap[i, s, k, t] - m.Q_idle[i, s, k, t]) <= m.rho[s, t] * emissions
@@ -196,7 +189,7 @@ def apply_constraints(m, discount_rate=0.05):
         return sum(m.q_CO2_cap[i, s, k, v, t] for v in m.v if v <= t) <= (m.Q_cap[i, s, k, t] - m.Q_idle[i, s, k, t])
 
     # ==========================================
-    # ROBUST SINK CONSTRAINTS
+    # SINK CONSTRAINTS
     # ==========================================
     @m.Constraint(m.region, m.sink_blocks)
     def sink_explore(m, i, b):
@@ -215,8 +208,8 @@ def apply_constraints(m, discount_rate=0.05):
             return m.sink_active_cap[i, b, t] == 0
 
         return (
-                m.sink_active_cap[i, b, t]
-                == sum(m.sink_bdv[i, b, tau] for tau in valid_years) * inj_rate
+            m.sink_active_cap[i, b, t]
+            == sum(m.sink_bdv[i, b, tau] for tau in valid_years) * inj_rate
         )
 
     @m.Constraint(m.region, m.sink_blocks, m.y)
@@ -233,7 +226,7 @@ def apply_constraints(m, discount_rate=0.05):
 
         valid_years = [tau for tau in m.y if tau <= t]
         return (
-                sum(m.q_CO2_inj[i, b, tau] for tau in valid_years) <= cap
+            sum(m.q_CO2_inj[i, b, tau] for tau in valid_years) <= cap
         )
 
     return m

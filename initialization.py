@@ -226,6 +226,7 @@ def build_base_model(data_dict):
     m.q_CO2_trans = pyo.Var(
         m.region, m.region, m.y,
         domain=pyo.NonNegativeReals,
+        initialize=0.0,
         doc="Physical CO2 transported",
     )
     m.q_CO2_inj = pyo.Var(
@@ -234,12 +235,22 @@ def build_base_model(data_dict):
         doc="Physical CO2 injected",
     )
 
-    # Carbon Storage Units (CSUs)
-    m.CSU_balance = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
+    # Carbon Storage Units (CSUs) - Stream Separation
+    m.CSU_banked_local = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
+    m.CSU_banked_bought = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
     m.CSU_generate = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
     m.CSU_buy = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
     m.CSU_sell = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
     m.CSU_use = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
+    m.CSU_use_local = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
+    m.CSU_use_bought = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
+
+    # Idle Capacity (Stranded Assets)
+    m.Q_idle = pyo.Var(
+        m.region, m.sector, m.tech, m.y,
+        domain=pyo.NonNegativeReals,
+        doc="Inactive capacity (stranded assets) when emissions drop"
+    )
 
     # Capacity and Sinks
     m.Q_cap = pyo.Var(
