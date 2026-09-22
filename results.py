@@ -1,59 +1,62 @@
-import pyomo.environ as pyo
+from datetime import datetime
+from pathlib import Path
 import pandas as pd
+import pyomo.environ as pyo
 
 
-def extract_variable_data(var):
-    """
-    Extracts data from a single Pyomo variable and converts it into a pandas DataFrame.
-    Handles both scalar variables (like total costs) and indexed variables.
-    """
-    # 1. Handle unindexed (scalar) variables like m.costs
-    if not var.is_indexed():
-        return pd.DataFrame({"Value": [pyo.value(var)]})
+def extract_variable_data(var, scenario_label=None):
+  """Extracts data from a single Pyomo variable and converts it into a pandas DataFrame.
 
-    # 2. Handle indexed variables
+  Handles both scalar variables and indexed variables, optionally adding a
+  scenario label column.
+  """
+  if not var.is_indexed():
+    df = pd.DataFrame({"Value": [pyo.value(var)]})
+  else:
     records = []
     for index in var:
-        # Check if the variable is multi-dimensional (returns a tuple) or 1D
-        if isinstance(index, tuple):
-            row = list(index)
-        else:
-            row = [index]
+      row = list(index) if isinstance(index, tuple) else [index]
+      try:
+        val = pyo.value(var[index])
+      except ValueError:
+        val = None
+      row.append(val)
+      records.append(row)
 
-        # Extract the optimized value (use pyo.value to avoid Pyomo object errors)
-        try:
-            val = pyo.value(var[index])
-        except ValueError:
-            val = None  # In case a variable wasn't initialized or solved
-
-        row.append(val)
-        records.append(row)
-
-    # Generate generic column names based on the variable's dimensions
     dim = var.dim()
     cols = [f"Index_{i + 1}" for i in range(dim)] + ["Value"]
-
     df = pd.DataFrame(records, columns=cols)
-    return df
+
+  if scenario_label is not None:
+    df.insert(0, "Scenario", scenario_label)
+
+  return df
 
 
-def export_results(m, output_filename="SCM_RESULTS.xlsx"):
-    """
-    Iterates through all active variables in the model and writes them to an Excel file.
-    """
-    print(f"Exporting results to {output_filename}...")
+def export_results(m, output_filename="SCM_RESULTS.xlsx", scenario_label=None):
+  """Iterates through all active variables in the model and writes them
 
-    # Use pandas ExcelWriter to write multiple sheets
-    with pd.ExcelWriter(output_filename, engine="openpyxl") as writer:
-        # Iterate over all Variable objects in the Pyomo model
-        for var in m.component_objects(pyo.Var, active=True):
-            var_name = var.name
-            df = extract_variable_data(var)
+  to an Excel file inside a timestamped directory, supporting the scenario label.
+  """
+  path = Path(output_filename)
+  timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-            # Excel has a strict 31-character limit for sheet names
-            sheet_name = var_name[:31]
+  if path.suffix.lower() == ".xlsx":
+    parent_dir = path.parent if path.parent != Path("") else Path(".")
+    output_dir = parent_dir / f"{path.stem}_{timestamp}"
+    final_filepath = output_dir / "model_results.xlsx"
+  else:
+    output_dir = Path(f"{output_filename}_{timestamp}")
+    final_filepath = output_dir / "model_results.xlsx"
 
-            # Write the DataFrame to its own sheet
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
+  output_dir.mkdir(parents=True, exist_ok=True)
+  print(f"Exporting results to {final_filepath}...")
 
-    print("--- Export Complete ---")
+  with pd.ExcelWriter(final_filepath, engine="openpyxl") as writer:
+    for var in m.component_objects(pyo.Var, active=True):
+      var_name = var.name
+      df = extract_variable_data(var, scenario_label=scenario_label)
+      sheet_name = var_name[:31]  # Excel 31-character limit
+      df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+  print(f"--- Export Complete --- Saved in folder: {output_dir}")

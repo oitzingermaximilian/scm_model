@@ -83,16 +83,27 @@ def apply_constraints(m, discount_rate=0.05):
         ) + sum(m.f_NG_import[i, s, t] for s in m.sector)
         return m.g[t] * ng_sum * m.psi[t] <= m.CSU_use[i, t]
 
-    @m.Constraint(m.region, m.y_tilde)
+    @m.Constraint(m.region, m.y)
     def csu_balance(m, i, t):
-        return (
-                m.CSU_balance[i, t]
-                == m.CSU_balance[i, t - 1]
-                + m.CSU_generate[i, t]
-                + m.CSU_buy[i, t]
-                - m.CSU_sell[i, t]
-                - m.CSU_use[i, t]
-        )
+        if t == base_year:
+            # No previous year to draw from; starting balance is 0
+            return (
+                    m.CSU_balance[i, t]
+                    == m.CSU_generate[i, t]
+                    + m.CSU_buy[i, t]
+                    - m.CSU_sell[i, t]
+                    - m.CSU_use[i, t]
+            )
+        else:
+            # Carry over from the previous year
+            return (
+                    m.CSU_balance[i, t]
+                    == m.CSU_balance[i, t - 1]
+                    + m.CSU_generate[i, t]
+                    + m.CSU_buy[i, t]
+                    - m.CSU_sell[i, t]
+                    - m.CSU_use[i, t]
+            )
 
     @m.Constraint(m.y)
     def csu_market_clearing(m, t):
