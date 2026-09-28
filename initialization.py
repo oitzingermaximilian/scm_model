@@ -117,6 +117,22 @@ def build_base_model(data_dict):
         default=0.0,
         doc="Absolute cumulative storage capacity (tonnes)",
     )
+
+    # Sink Parameters
+    m.sink_stage = pyo.Param(
+        m.region,
+        m.sink_blocks,
+        initialize=data_dict.get("sink_stage", {}),
+        default=1,
+        doc="Development stage sequence number of the sink block",
+    )
+    m.sink_parent = pyo.Param(
+        m.region,
+        m.sink_blocks,
+        initialize=data_dict.get("sink_parent", {}),
+        domain=pyo.Any,  # Any is required because the parent ID is a string, not a number
+        doc="Original block ID linking stages together",
+    )
     m.c_sink_capex = pyo.Param(
         m.region,
         m.sink_blocks,
@@ -138,11 +154,11 @@ def build_base_model(data_dict):
     m.c_ETS = pyo.Param(
         m.y, initialize=data_dict["c_ETS"], doc="Exogenous EU-ETS CO2 price"
     )
-    m.c_cap_opex = pyo.Param(
+    m.c_cap_fix_opex = pyo.Param(
         m.sector,
         m.tech,
         m.y,
-        initialize=data_dict["c_cap_opex"],
+        initialize=data_dict["c_cap_fix_opex"],
         default=0.0,
         doc="Operational cost for capture",
     )
@@ -154,6 +170,17 @@ def build_base_model(data_dict):
         default=0.0,
         doc="Investment cost for capture capacity",
     )
+
+    m.c_cap_var_opex = pyo.Param(
+        m.sector,
+        m.tech,
+        m.y,
+        initialize=data_dict["c_cap_var_opex"],
+        default=40.52,
+        doc="Operational cost for capture",
+    )
+
+
     m.c_trans = pyo.Param(
         m.region,
         m.region,

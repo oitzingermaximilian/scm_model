@@ -28,13 +28,22 @@ def prepare_model_data(raw_data):
 
     model_data["y"] = df_ts.index.tolist()
 
-    model_data["g"] = {y: round(float(df_ts.at[y, "g"]), 3) for y in model_data["y"]}
+    # --- FIX FOR SCENARIOS ---
+    # 1. Check for g_SCENARIO, default to base 'g' if not present
+    if "g_SCENARIO" not in df_ts.columns:
+        df_ts["g_SCENARIO"] = df_ts["g"]
+
+    # 2. Extract into model_data using g_SCENARIO
+    model_data["g"] = {y: round(float(df_ts.at[y, "g_SCENARIO"]), 3) for y in model_data["y"]}
+
     model_data["psi"] = {
         y: round(float(df_ts.at[y, "psi"]), 3) for y in model_data["y"]
     }
 
+    # 3. Check for ets_SCENARIO, default to 'c_ets_mid' if not present
     if "ets_SCENARIO" not in df_ts.columns:
         df_ts["ets_SCENARIO"] = df_ts["c_ets_mid"]
+
     model_data["c_ETS"] = {
         y: round(float(df_ts.at[y, "ets_SCENARIO"]), 3) for y in model_data["y"]
     }
@@ -97,7 +106,8 @@ def prepare_model_data(raw_data):
     model_data["tech_rem"] = []
 
     dict_capex = {}
-    dict_opex = {}
+    dict_opex_fix = {}
+    dict_opex_var = {}
     dict_mu = {}
 
     known_years = sorted(
@@ -116,10 +126,12 @@ def prepare_model_data(raw_data):
             app_year = max(past_years) if past_years else min(known_years)
 
             dict_capex[(s, k, t)] = round(float(row[f"capex_{app_year}"]), 3)
-            dict_opex[(s, k, t)] = round(float(row[f"opex_{app_year}"]), 3)
+            dict_opex_fix[(s, k, t)] = round(float(row[f"opex_fix_{app_year}"]), 3)
+            dict_opex_var[(s, k, t)] = round(float(row[f"opex_var_{app_year}"]), 3)
 
     model_data["c_cap_capex"] = dict_capex
-    model_data["c_cap_opex"] = dict_opex
+    model_data["c_cap_fix_opex"] = dict_opex_fix
+    model_data["c_cap_var_opex"] = dict_opex_var
     model_data["mu"] = dict_mu
 
     # ==========================================
@@ -130,11 +142,19 @@ def prepare_model_data(raw_data):
     df_sinks["block_id"] = df_sinks["block_id"].astype(str).str.strip()
     df_sinks["region_i"] = df_sinks["region_i"].astype(str).str.strip()
     df_sinks["storage_type"] = df_sinks["storage_type"].astype(str).str.strip()
+    df_sinks["stage_id"] = df_sinks["stage_id"].fillna(1).astype(int)
+
+    # ---------------------------------------------------------
+    # CRITICAL FIX: Create a unique ID for Pyomo by combining columns
+    # e.g., "Bifrost" + 1 -> "Bifrost_S1"
+    # ---------------------------------------------------------
+    df_sinks["unique_block_id"] = df_sinks["block_id"] + "_S" + df_sinks["stage_id"].astype(str)
 
     for col in ["max_injection_yr", "max_capacity"]:
         df_sinks[col] = df_sinks[col].astype(str).str.replace(" ", "").astype(float)
 
-    model_data["sink_blocks"] = df_sinks["block_id"].unique().tolist()
+    # Give Pyomo the UNIQUE IDs for its Set, not the original duplicates!
+    model_data["sink_blocks"] = df_sinks["unique_block_id"].unique().tolist()
     model_data["storage_types"] = df_sinks["storage_type"].unique().tolist()
 
     dict_sink_timedelay = {}
@@ -143,19 +163,29 @@ def prepare_model_data(raw_data):
     dict_sink_capex = {}
     dict_sink_opex = {}
     dict_sink_type_map = {}
+    dict_sink_stage = {}
+    dict_sink_parent = {}
 
     known_sink_years = sorted(
         [int(c.split("_")[1]) for c in df_sinks.columns if c.startswith("capex_")]
     )
 
     for _, row in df_sinks.iterrows():
-        b = row["block_id"]
-        i = row["region_i"]
+        # Use the artificially created unique ID for all dictionary keys!
+        b_unique = row["unique_block_id"]
 
-        dict_sink_type_map[(i, b)] = row["storage_type"]
-        dict_sink_timedelay[(i, b)] = int(row["timedelay_td"])
-        dict_sink_inj_rate[(i, b)] = row["max_injection_yr"]
-        dict_sink_cap[(i, b)] = row["max_capacity"]
+        b_parent = row["block_id"]  # We keep the original name just for the parent link
+        i = row["region_i"]
+        stage = row["stage_id"]
+
+        dict_sink_type_map[(i, b_unique)] = row["storage_type"]
+        dict_sink_timedelay[(i, b_unique)] = int(row["timedelay_td"])
+        dict_sink_inj_rate[(i, b_unique)] = row["max_injection_yr"]
+        dict_sink_cap[(i, b_unique)] = row["max_capacity"]
+
+        # Store the stage and parent info using the unique ID
+        dict_sink_stage[(i, b_unique)] = stage
+        dict_sink_parent[(i, b_unique)] = b_parent
 
         for t in model_data["y"]:
             past_years = [y for y in known_sink_years if y <= t]
@@ -164,8 +194,9 @@ def prepare_model_data(raw_data):
             unit_capex = float(row[f"capex_{app_year}"])
             unit_opex = float(row[f"opex_{app_year}"])
 
-            dict_sink_capex[(i, b, t)] = round(unit_capex * row["max_capacity"], 3)
-            dict_sink_opex[(i, b, t)] = round(unit_opex, 3)
+            # Create CAPEX and OPEX using the unique ID
+            dict_sink_capex[(i, b_unique, t)] = round(unit_capex * row["max_capacity"], 3)
+            dict_sink_opex[(i, b_unique, t)] = round(unit_opex, 3)
 
     model_data["sink_timedelay"] = dict_sink_timedelay
     model_data["sink_injection_rate"] = dict_sink_inj_rate
@@ -173,6 +204,8 @@ def prepare_model_data(raw_data):
     model_data["c_sink_capex"] = dict_sink_capex
     model_data["c_sink_opex"] = dict_sink_opex
     model_data["sink_type_map"] = dict_sink_type_map
+    model_data["sink_stage"] = dict_sink_stage
+    model_data["sink_parent"] = dict_sink_parent
 
     # ==========================================
     # 4. Process "ng_flows" Sheet (with Disaggregation)
@@ -283,8 +316,10 @@ def prepare_model_data(raw_data):
 
     model_data["c_trans"] = dict_c_trans
 
+    # --- THE FIXED LOOP ---
     for _, row in df_sinks.iterrows():
-        b = row["block_id"]
+        # CRITICAL: Must use unique_block_id here too!
+        b_unique = row["unique_block_id"]
         i = row["region_i"]
         storage_type = row["storage_type"].lower()
 
@@ -299,7 +334,9 @@ def prepare_model_data(raw_data):
             app_year = max(past_years) if past_years else min(known_sink_years)
 
             base_opex = float(row[f"opex_{app_year}"])
-            dict_sink_opex[(i, b, t)] = round(base_opex + transport_tariff, 3)
+
+            # Write to the dictionary using b_unique
+            dict_sink_opex[(i, b_unique, t)] = round(base_opex + transport_tariff, 3)
 
     model_data["c_sink_opex"] = dict_sink_opex
 
@@ -354,7 +391,8 @@ def export_model_data_to_excel(model_data, output_path="model_verification_outpu
                 "technology": k,
                 "year": t,
                 "capex": val,
-                "opex": model_data["c_cap_opex"].get((s, k, t)),
+                "opex_fix": model_data["c_cap_fix_opex"].get((s, k, t)),
+                "opex_var": model_data["c_cap_var_opex"].get((s, k, t)),
                 "mu_efficiency": model_data["mu"].get((s, k))
             })
         pd.DataFrame(tech_list).to_excel(writer, sheet_name="tech_costs", index=False)
