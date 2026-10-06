@@ -8,22 +8,27 @@ from initialization import build_base_model
 from model import apply_constraints
 from results import export_results
 
-# NEW: Import the dynamic dictionary we created
+# Import the dynamic dictionary we created
 from scenarios import SCENARIO_DICT
+
 
 def analyze_model_lcos(m, discount_rate=0.08, default_lifetime=20):
     """Calculates the Levelized Cost of CCUS directly from the Pyomo model parameters
-
-    and compares it against the ETS carbon price.
+    and compares it against the ETS carbon price, accounting for split fixed/var OPEX for capture.
     """
     # ---------------------------------------------------------
     # 1. EXTRACT DATA DIRECTLY FROM MODEL INSTANCE
     # ---------------------------------------------------------
     c_cap_capex = m.c_cap_capex.extract_values()
-    c_cap_opex = m.c_cap_opex.extract_values()
+    c_cap_fix_opex = m.c_cap_fix_opex.extract_values()
+    c_cap_var_opex = m.c_cap_var_opex.extract_values()
+
     c_trans = m.c_trans.extract_values()
+
     c_sink_capex = m.c_sink_capex.extract_values()
+    # Reverted back to the original single OPEX for sinks
     c_inj_opex = m.c_inj_opex.extract_values()
+
     sink_cap = m.sink_block_cap.extract_values()
     sink_inj_rate = m.sink_injection_rate.extract_values()
     c_ets = m.c_ETS.extract_values()
@@ -33,12 +38,12 @@ def analyze_model_lcos(m, discount_rate=0.08, default_lifetime=20):
 
     base_year = m.y.first()
     crf = (discount_rate * (1 + discount_rate) ** default_lifetime) / (
-        (1 + discount_rate) ** default_lifetime - 1
+            (1 + discount_rate) ** default_lifetime - 1
     )
 
     print("=" * 80)
     print(
-        f"CCUS LEVELIZED COST DIAGNOSTIC (Discount Rate: {discount_rate*100:.1f}%, Lifetime: {default_lifetime} yrs, CRF: {crf:.4f})"
+        f"CCUS LEVELIZED COST DIAGNOSTIC (Discount Rate: {discount_rate * 100:.1f}%, Lifetime: {default_lifetime} yrs, CRF: {crf:.4f})"
     )
     print("=" * 80)
 
@@ -56,25 +61,35 @@ def analyze_model_lcos(m, discount_rate=0.08, default_lifetime=20):
         for k in m.tech:
             # Look at base_year values
             capex = c_cap_capex.get((s, k, base_year), 0.0)
-            # Take average or base_year opex
-            opex_vals = [
-                v
-                for (sec, tech, vin), v in c_cap_opex.items()
+
+            # Take average or base_year fixed opex
+            fix_opex_vals = [
+                v for (sec, tech, yr), v in c_cap_fix_opex.items()
                 if sec == s and tech == k
             ]
-            opex = opex_vals[0] if opex_vals else 0.0
+            fix_opex = fix_opex_vals[0] if fix_opex_vals else 0.0
+
+            # Take average or base_year variable opex
+            var_opex_vals = [
+                v for (sec, tech, vin), v in c_cap_var_opex.items()
+                if sec == s and tech == k
+            ]
+            var_opex = var_opex_vals[0] if var_opex_vals else 0.0
+
+            # Total OPEX per tonne assuming full capacity utilization
+            total_opex = fix_opex + var_opex
 
             ann_capex = capex * crf
-            lco_capture = ann_capex + opex
+            lco_capture = ann_capex + total_opex
             capture_summary[(s, k)] = {
                 "capex": capex,
                 "ann_capex": ann_capex,
-                "opex": opex,
+                "opex": total_opex,
                 "lco_capture": lco_capture,
             }
 
             print(
-                f"{s:<22} {k:<16} {capex:<12.1f} {ann_capex:<12.2f} {opex:<12.2f} €{lco_capture:.2f}/t"
+                f"{s:<22} {k:<16} {capex:<12.1f} {ann_capex:<12.2f} {total_opex:<12.2f} €{lco_capture:.2f}/t"
             )
 
     # ---------------------------------------------------------
@@ -91,17 +106,16 @@ def analyze_model_lcos(m, discount_rate=0.08, default_lifetime=20):
         if tot_cap == 0:
             continue
         inj_rate = sink_inj_rate.get((i, b), 0.0)
+
         # Sinks have capex across years, take year 1 capex or first non-zero
         block_capex_list = [
-            val
-            for (reg, blk, yr), val in c_sink_capex.items()
+            val for (reg, blk, yr), val in c_sink_capex.items()
             if reg == i and blk == b and val > 0
         ]
         block_capex = block_capex_list[0] if block_capex_list else 0.0
 
         inj_op_list = [
-            val
-            for (reg, blk, yr), val in c_inj_opex.items()
+            val for (reg, blk, yr), val in c_inj_opex.items()
             if reg == i and blk == b
         ]
         inj_op = inj_op_list[0] if inj_op_list else 0.0
@@ -113,7 +127,7 @@ def analyze_model_lcos(m, discount_rate=0.08, default_lifetime=20):
             else default_lifetime
         )
         crf_sink = (discount_rate * (1 + discount_rate) ** effective_life) / (
-            (1 + discount_rate) ** effective_life - 1
+                (1 + discount_rate) ** effective_life - 1
         )
 
         # Levelized sink CAPEX per tonne = (Overnight CAPEX * CRF) / annual injection volume
@@ -136,29 +150,22 @@ def analyze_model_lcos(m, discount_rate=0.08, default_lifetime=20):
     print(f"--> Base Year ({base_year}) ETS Carbon Price: €{base_ets:.2f}/tCO2\n")
 
     full_chain_rows = []
-    # Test specific key sink regions (e.g., NO, UK, or domestic EU)
     sink_regions = set(i for (i, b) in sink_summary.keys())
 
     for (s, k), cap_data in capture_summary.items():
         for s_reg in sink_regions:
-            # Find the cheapest block in this sink region
             blocks_in_reg = [
-                (b, cost)
-                for (r, b), cost in sink_summary.items()
-                if r == s_reg
+                (b, cost) for (r, b), cost in sink_summary.items() if r == s_reg
             ]
             if not blocks_in_reg:
                 continue
             best_block, best_sink_cost = min(blocks_in_reg, key=lambda x: x[1])
 
-            # For each emitting region
             for e_reg in m.region:
                 trans_cost = (
                     c_trans.get((e_reg, s_reg), 0.0) if e_reg != s_reg else 0.0
                 )
 
-                # Total CCUS Cost
-                # Note: If 1/eta is applied in network balance, adjust sink/transport accordingly
                 total_ccus = cap_data["lco_capture"] + trans_cost + (best_sink_cost / eta)
                 diff = total_ccus - base_ets
 
@@ -180,9 +187,6 @@ def analyze_model_lcos(m, discount_rate=0.08, default_lifetime=20):
                 )
 
     df_res = pd.DataFrame(full_chain_rows)
-
-    # Show a concise preview of key combinations
-    # Filter to show only unique sector-to-sink combinations
     preview = (
         df_res.groupby(["Sector", "Sink_Reg"])
         .agg(
@@ -218,6 +222,7 @@ def analyze_model_lcos(m, discount_rate=0.08, default_lifetime=20):
 
     return df_res
 
+
 parser = argparse.ArgumentParser(description="Run SCM model scenarios using Gurobi.")
 parser.add_argument(
     "--scenario",
@@ -242,7 +247,6 @@ def execute_scenario(scenario_name, scenario_func):
     # Step 3: Convert DataFrames to Pyomo-ready dictionaries
     model_data = prepare_model_data(raw_data)
 
-
     # Step 4: Build model
     base_model = build_base_model(model_data)
     final_model = apply_constraints(base_model)
@@ -250,12 +254,7 @@ def execute_scenario(scenario_name, scenario_func):
     # =========================================================================
     # CALL DIAGNOSTIC FUNCTION HERE (Before solving)
     # =========================================================================
-    #analyze_model_lcos(final_model, discount_rate=0.08, default_lifetime=20)
-    # =========================================================================
-
-    # Step 4: Build model
-    base_model = build_base_model(model_data)
-    final_model = apply_constraints(base_model)
+    analyze_model_lcos(final_model, discount_rate=0.08, default_lifetime=20)
 
     # =========================================================================
     # DEBUG OUTPUT: Check if scenario parameters applied correctly
@@ -311,14 +310,12 @@ def execute_scenario(scenario_name, scenario_func):
 
 
 if __name__ == "__main__":
-    # Use the dynamic dictionary from scenarios.py
     scenarios_registry = SCENARIO_DICT
 
     if args.scenario == "all":
         for name, func in scenarios_registry.items():
             execute_scenario(name, func)
     else:
-        # Check if the requested scenario exists in our dictionary
         if args.scenario in scenarios_registry:
             func = scenarios_registry[args.scenario]
             execute_scenario(args.scenario, func)

@@ -100,17 +100,17 @@ def apply_constraints(m, discount_rate=0.05):
     @m.Constraint(m.region, m.y)
     def csu_local_balance(m, i, t):
         if t == base_year:
-            return m.CSU_banked_local[i, t] == m.CSU_generate[i, t] - m.CSU_use_local[i, t] - m.CSU_sell[i, t]
+            return m.CSU_banked_local[i, t] == m.CSU_generate[i, t] - m.CSU_use_local[i, t] - m.CSU_sell[i, t] - m.CSU_cancel[i, t]
         else:
             return m.CSU_banked_local[i, t] == m.CSU_banked_local[i, t - 1] + m.CSU_generate[i, t] - m.CSU_use_local[
-                i, t] - m.CSU_sell[i, t]
+                i, t] - m.CSU_sell[i, t] - m.CSU_cancel[i, t]
 
     @m.Constraint(m.region, m.y)
     def csu_bought_balance(m, i, t):
         if t == base_year:
-            return m.CSU_banked_bought[i, t] == m.CSU_buy[i, t] - m.CSU_use_bought[i, t]
+            return m.CSU_banked_bought[i, t] == m.CSU_buy[i, t] - m.CSU_use_bought[i, t] - m.CSU_cancel_bought[i, t]
         else:
-            return m.CSU_banked_bought[i, t] == m.CSU_banked_bought[i, t - 1] + m.CSU_buy[i, t] - m.CSU_use_bought[i, t]
+            return m.CSU_banked_bought[i, t] == m.CSU_banked_bought[i, t - 1] + m.CSU_buy[i, t] - m.CSU_use_bought[i, t] - m.CSU_cancel_bought[i, t]
 
     @m.Constraint(m.y)
     def csu_market_clearing(m, t):

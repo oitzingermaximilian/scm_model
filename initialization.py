@@ -176,7 +176,7 @@ def build_base_model(data_dict):
         m.tech,
         m.y,
         initialize=data_dict["c_cap_var_opex"],
-        default=40.52,
+        default=0.0,
         doc="Operational cost for capture",
     )
 
@@ -271,6 +271,8 @@ def build_base_model(data_dict):
     m.CSU_use = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
     m.CSU_use_local = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
     m.CSU_use_bought = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
+    m.CSU_cancel = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
+    m.CSU_cancel_bought = pyo.Var(m.region, m.y, domain=pyo.NonNegativeReals)
 
     # Idle Capacity (Stranded Assets)
     m.Q_idle = pyo.Var(
