@@ -10,7 +10,8 @@ from plotly.subplots import make_subplots
 import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
 from input import load_data, prepare_model_data
-
+from matplotlib.patches import Patch
+from matplotlib.ticker import FuncFormatter
 # ==========================================
 # Setup matplotlib style
 # ==========================================
@@ -36,11 +37,11 @@ DESIRED_REGION_ORDER = ["UK", "EU27", "NO"]
 
 # Global Region Colors
 REGION_COLOR_MAP = {
-    "EU27": '#A9907E',
-    "NO": '#F3DEBA',
-    "UK": '#ABC4AA'
+    "EU27": '#425B9A',
+    "NO": '#80A1D4',
+    "UK": '#76C0EC'
 }
-C_GEN, C_BUY, C_SELL, C_OB = '#A8D8EA', '#AA96DA', '#FFFFD2', '#FCBAD3'
+C_GEN, C_BUY, C_SELL, C_OB = '#88292F', '#FFE986', '#FFF6DC', '#FF95A5'
 
 # Load Base Data Once (Needed for mapping ETS prices)
 RAW = load_data()
@@ -58,12 +59,65 @@ INCLINE_COLORS = {
     2050: '#F8ED6F'  # Low Case (Flach bis 2050)
 }
 
+# ==========================================
+# Infrastructure Expansion Data
+# ==========================================
+INFRA_DATA = [
+    {"region": "EU27", "sector": "Industry_cement", "cap_init": 0, "delta_cap": 3500000, "ir_cap": 0.8},
+    {"region": "EU27", "sector": "Industry_iron_steel", "cap_init": 0, "delta_cap": 2500000, "ir_cap": 1.0},
+    {"region": "EU27", "sector": "Industry_chemicals", "cap_init": 0, "delta_cap": 2000000, "ir_cap": 0.75},
+    {"region": "EU27", "sector": "Industry_refining", "cap_init": 160000, "delta_cap": 3000000, "ir_cap": 0.5},
+    {"region": "EU27", "sector": "Power", "cap_init": 100000, "delta_cap": 8000000, "ir_cap": 1.5},
+    {"region": "NO", "sector": "Industry_cement", "cap_init": 400000, "delta_cap": 1000000, "ir_cap": 0.4},
+    {"region": "NO", "sector": "Industry_iron_steel", "cap_init": 0, "delta_cap": 500000, "ir_cap": 0.5},
+    {"region": "NO", "sector": "Industry_chemicals", "cap_init": 0, "delta_cap": 500000, "ir_cap": 0.5},
+    {"region": "NO", "sector": "Industry_refining", "cap_init": 1700000, "delta_cap": 2000000, "ir_cap": 0.3},
+    {"region": "NO", "sector": "Power", "cap_init": 0, "delta_cap": 500000, "ir_cap": 0.6},
+    {"region": "UK", "sector": "Industry_cement", "cap_init": 0, "delta_cap": 2000000, "ir_cap": 0.8},
+    {"region": "UK", "sector": "Industry_iron_steel", "cap_init": 0, "delta_cap": 1500000, "ir_cap": 1.0},
+    {"region": "UK", "sector": "Industry_chemicals", "cap_init": 0, "delta_cap": 3000000, "ir_cap": 1.0},
+    {"region": "UK", "sector": "Industry_refining", "cap_init": 0, "delta_cap": 4000000, "ir_cap": 0.9},
+    {"region": "UK", "sector": "Power", "cap_init": 0, "delta_cap": 6000000, "ir_cap": 1.2},
+    {"region": "EU27", "sector": "Industry_other", "cap_init": 0, "delta_cap": 1500000, "ir_cap": 0.5},
+    {"region": "NO", "sector": "Industry_other", "cap_init": 0, "delta_cap": 500000, "ir_cap": 0.5},
+    {"region": "UK", "sector": "Industry_other", "cap_init": 0, "delta_cap": 1500000, "ir_cap": 0.5}
+]
+
 
 # ==========================================
 # Helper Functions
 # ==========================================
+def get_theoretical_max_capacity_df():
+    """Calculates the absolute maximum theoretical capture capacity iteratively."""
+    records = []
+    for item in INFRA_DATA:
+        r = item["region"]
+        s = item["sector"]
+        q_init = item["cap_init"]
+        delta = item["delta_cap"]
+        ir = item["ir_cap"]
+
+        q_new_max = 0
+        q_cap_max = q_init
+
+        for y in range(2026, 2041):
+            if y == 2026:
+                q_new_max = delta
+            else:
+                q_new_max = q_new_max + delta + ir * q_new_max
+
+            q_cap_max = q_cap_max + q_new_max
+
+            records.append({
+                "region": r,
+                "sector": s,
+                "year": y,
+                "max_cap_Mt": q_cap_max / 1000000.0
+            })
+    return pd.DataFrame(records)
+
+
 def get_latest_result_path(scenario_name):
-    """Finds the model results file for a given scenario name."""
     path1 = os.path.join("results", scenario_name, "model_results.xlsx")
     path2 = os.path.join("results", scenario_name, f"SCM_RESULTS_{scenario_name}.xlsx")
 
@@ -197,6 +251,131 @@ def generate_standard_plots(scenario_name):
             plt.savefig(os.path.join(dirs["FLOWS"], "Figure1b_CSU_Trade_Balance.pdf"), dpi=600, bbox_inches='tight')
         plt.close()
 
+        # ---------------- Figure 1c: Exports and Imports ----------------
+        fig, ax1c = plt.subplots(figsize=(5.5, 5.5))
+
+        trans_agg = (
+            q_trans.groupby(["region_from", "region_to"])["value"]
+            .sum()
+            .reset_index()
+        )
+        trans_agg = trans_agg[
+            trans_agg["region_from"] != trans_agg["region_to"]
+            ]
+
+        regions = [
+            r for r in DESIRED_REGION_ORDER
+            if r in set(trans_agg["region_from"]) | set(trans_agg["region_to"])
+        ]
+
+        export_pivot = (
+            trans_agg.pivot(
+                index="region_from", columns="region_to", values="value"
+            )
+            .reindex(index=regions, columns=regions)
+            .fillna(0)
+        )
+
+        import_pivot = (
+            trans_agg.pivot(
+                index="region_to", columns="region_from", values="value"
+            )
+            .reindex(index=regions, columns=regions)
+            .fillna(0)
+        )
+
+        bar_colors = {r: REGION_COLOR_MAP[r] for r in regions}
+        x = np.arange(len(regions))
+        bar_width = 0.48
+
+        export_bottom = np.zeros(len(regions))
+        import_bottom = np.zeros(len(regions))
+
+        for partner in regions:
+            # Positive: CO2 exported TO the partner region
+            export_values = export_pivot[partner].to_numpy()
+            ax1c.bar(
+                x, export_values, bar_width, bottom=export_bottom,
+                color=bar_colors[partner], edgecolor="black", linewidth=0.35,
+                zorder=3
+            )
+            export_bottom += export_values
+
+            # Negative: CO2 imported FROM the partner region
+            import_values = -import_pivot[partner].to_numpy()
+            ax1c.bar(
+                x, import_values, bar_width, bottom=import_bottom,
+                color=bar_colors[partner], edgecolor="black", linewidth=0.35,
+                zorder=3
+            )
+            import_bottom += import_values
+
+        ax1c.axhline(0, color="black", linewidth=0.9, zorder=4)
+
+        if with_titles:
+            ax1c.set_title("Physical CO$_2$ Transport: Exports and Imports")
+
+        ax1c.set_ylabel("CO$_2$ Transported (MtCO$_2$)")
+        # Display absolute values on both sides of zero
+        ax1c.yaxis.set_major_formatter(
+            FuncFormatter(lambda y, _: f"{abs(y):g}")
+        )
+        ax1c.set_xticks(x)
+        ax1c.set_xticklabels(regions, rotation=0)
+
+        # Keep direction labels in the plot margins, clear of the bars
+        ax1c.set_ylim(
+            import_bottom.min() * 1.18 if import_bottom.min() < 0 else -1,
+            export_bottom.max() * 1.12 if export_bottom.max() > 0 else 1
+        )
+
+        ax1c.text(
+            0.02, 0.96, "Exports",
+            transform=ax1c.transAxes,
+            ha="left", va="top",
+            fontsize=_fontsize,
+            bbox=dict(facecolor="white", edgecolor="none", alpha=0.85, pad=2)
+        )
+        ax1c.text(
+            0.02, 0.02, "Imports",
+            transform=ax1c.transAxes,
+            ha="left", va="bottom",
+            fontsize=_fontsize,
+            bbox=dict(facecolor="white", edgecolor="none", alpha=0.85, pad=2)
+        )
+
+        ax1c.grid(True, axis="y", linestyle=":", alpha=0.6, zorder=0)
+        ax1c.set_axisbelow(True)
+
+        # Colors represent the region that the CO2 flows to/from
+        legend_handles = [
+            Patch(
+                facecolor=bar_colors[r],
+                edgecolor="black",
+                linewidth=0.4,
+                label=r
+            )
+            for r in regions
+        ]
+
+        ax1c.legend(
+            handles=legend_handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.13),
+            ncol=min(len(regions), 3),
+            frameon=True,
+            edgecolor="black",
+            fontsize=_fontsize
+        )
+
+        fig.tight_layout()
+        fig.savefig(
+            os.path.join(dirs["FLOWS"], "Figure1c_CO2_Transport.pdf"),
+            dpi=600,
+            bbox_inches="tight"
+        )
+        plt.close(fig)
+
         # ---------------- Figures 2, 2b, 2c (State of Charge) ----------------
         import matplotlib.ticker as ticker
         all_years = sorted(set(q_inj["year"].unique()))
@@ -242,7 +421,6 @@ def generate_standard_plots(scenario_name):
 
             # ---------------- Figure 3: CSU Balance ----------------
             try:
-                # 1. Load capture data for local generation tracing
                 q_cap = pd.read_excel(result_path, sheet_name="q_CO2_cap")
                 if "Scenario" in q_cap.columns:
                     q_cap = q_cap.drop(columns=["Scenario"])
@@ -250,7 +428,6 @@ def generate_standard_plots(scenario_name):
                 q_cap = q_cap[q_cap["year"] <= MAX_YEAR]
                 q_cap.loc[:, "value"] /= 1000000.0
 
-                # Map 5-year periods
                 q_cap["Period"] = q_cap["year"].map(get_period)
                 q_trans["Period"] = q_trans["year"].map(get_period)
 
@@ -269,7 +446,6 @@ def generate_standard_plots(scenario_name):
                         continue
                     years = df_bal.index.tolist()
 
-                    # Area Chart (Annual Overview)
                     plt.figure(figsize=(7, 4))
                     ax_area = plt.gca()
                     ax_area.fill_between(years, 0, df_bal["Use"], color=C_OB, alpha=0.15, label='Use')
@@ -297,22 +473,17 @@ def generate_standard_plots(scenario_name):
                                 bbox_inches='tight')
                     plt.close()
 
-                    # Store data for combined bar chart
                     df_bal['Period'] = df_bal.index.map(get_period)
                     bar_chart_data[region] = df_bal.groupby('Period').sum().reindex(periods_order).fillna(0)
 
-                # Combined Stacked Bar Chart for CSU Balance with Node Origin Breakdown
                 if bar_chart_data:
                     num_regions = len(bar_chart_data)
                     fig_bar, axes_bar = plt.subplots(1, num_regions, figsize=(3.5 * num_regions, 4.5), sharey=False)
                     if num_regions == 1:
                         axes_bar = [axes_bar]
 
-                    # --- CORRECTED MAX Y MATH ---
-                    max_y = max(
-                        [(d["Gen"] + d["Buy"]).max() for d in bar_chart_data.values()] +
-                        [d["Use"].max() for d in bar_chart_data.values()]
-                    )
+                    max_y = max([(d["Gen"] + d["Buy"]).max() for d in bar_chart_data.values()] +
+                                [d["Use"].max() for d in bar_chart_data.values()])
                     min_y = min([-d["Sell"].max() for d in bar_chart_data.values()])
 
                     plotted_origins = set()
@@ -320,20 +491,12 @@ def generate_standard_plots(scenario_name):
                     for ax_bar, region in zip(axes_bar,
                                               [r for r in DESIRED_REGION_ORDER if r in bar_chart_data.keys()]):
                         df_period = bar_chart_data[region]
-
-                        # --- FIX APPLIED: Use Actual Generation ---
                         real_gen = df_period["Gen"]
 
-                        # -------------------------------------------------------------
-                        # PHYSICAL NODE ORIGIN TRACING
-                        # -------------------------------------------------------------
                         df_gen_nodes = pd.DataFrame(0.0, index=periods_order, columns=all_regions)
 
                         for p in periods_order:
-                            # 1. Local Capture in this node
                             cap_local = q_cap[(q_cap["region"] == region) & (q_cap["Period"] == p)]["value"].sum()
-
-                            # 2. Physical Imports from each originating node j != region
                             inflows = {}
                             for r_origin in all_regions:
                                 if r_origin == region:
@@ -354,7 +517,6 @@ def generate_standard_plots(scenario_name):
                             elif gen_vol > 0:
                                 df_gen_nodes.loc[p, region] = gen_vol
 
-                        # Plot stacked Generation by Origin Node using TRUE generation
                         bottom_gen = np.zeros(len(periods_order))
                         ordered_origins = [r for r in DESIRED_REGION_ORDER if r in all_regions] + \
                                           [r for r in all_regions if r not in DESIRED_REGION_ORDER]
@@ -368,41 +530,78 @@ def generate_standard_plots(scenario_name):
                                        color=c, edgecolor='black', linewidth=0.5)
                             bottom_gen += vals
 
-                        # Plot CSU Buy stacked on top of TRUE Generation
                         ax_bar.bar(periods_order, df_period["Buy"], bottom=real_gen, width=0.45,
                                    color=C_BUY, edgecolor='black', linewidth=0.5)
 
-                        # Plot CSU Sell below 0
                         ax_bar.bar(periods_order, -df_period["Sell"], width=0.45,
                                    color=C_SELL, edgecolor='black', linewidth=0.5)
 
-                        # Plot Obligation tick mark
                         for i, row in enumerate(df_period.itertuples()):
-                            ax_bar.hlines(y=row.Use, xmin=i - 0.225, xmax=i + 0.225,
-                                          color=C_OB, linewidth=2.5, zorder=5)
+                            ax_bar.plot([i - 0.225, i + 0.225], [row.Use, row.Use],
+                                        color=C_OB, linewidth=2.5, zorder=5)
 
                         ax_bar.set_title(region)
-                        ax_bar.set_ylim(min_y * 1.15 if min_y < 0 else 0, max_y * 1.15)
+
+                        # --- Y-AXIS BUFFER & -100 TICK LOGIC ---
+                        bottom_lim = min_y * 1.15 if min_y < 0 else 0
+                        if min_y < -50:
+                            bottom_lim = min(bottom_lim, -120.0)
+
+                        ax_bar.set_ylim(bottom_lim, max_y * 1.15)
+
+                        import matplotlib.ticker as ticker
+                        loc = ticker.AutoLocator()
+                        ax_bar.yaxis.set_major_locator(loc)
+                        ticks = loc.tick_values(bottom_lim, max_y * 1.15)
+
+                        valid_ticks = [t for t in ticks if t >= -100]
+
+                        if min_y < -50 and -100 not in valid_ticks:
+                            valid_ticks.append(-100)
+
+                        ax_bar.set_yticks(np.sort(valid_ticks))
+
                         ax_bar.axhline(0, color='black', linewidth=1)
                         ax_bar.grid(True, linestyle=":", alpha=0.6, axis='y')
 
+                    axes_bar[0].set_ylabel("CSU Balance (MtCO$_2$)")
+
+                    # --- FIXED INDENTATION STARTS HERE ---
                     if with_titles:
                         fig_bar.suptitle("Cumulative CSU Balance by CO$_2$ Origin Node", y=0.98, fontsize=_fontsize + 2)
 
-                    # Legend with origin nodes
-                    custom_handles = [
-                        mlines.Line2D([], [], color=C_OB, linewidth=2.5, label='Obligation'),
-                        mpatches.Patch(facecolor=C_BUY, edgecolor='black', label='CSU Buy'),
-                        mpatches.Patch(facecolor=C_SELL, edgecolor='black', label='CSU Sell')
-                    ]
+                    # --- LEGEND ROW & REORDER LOGIC ---
+                    h_elig = mlines.Line2D([], [], color=C_OB, linewidth=2.5, label='Obligation')
+                    h_buy = mpatches.Patch(facecolor=C_BUY, edgecolor='black', label='CSU buy')
+                    h_sell = mpatches.Patch(facecolor=C_SELL, edgecolor='black', label='CSU sell')
+                    row1 = [h_elig, h_buy, h_sell]
+
+                    row2 = []
                     for r_origin in [r for r in DESIRED_REGION_ORDER if r in plotted_origins]:
-                        custom_handles.append(
+                        row2.append(
                             mpatches.Patch(facecolor=REGION_COLOR_MAP.get(r_origin, '#CCCCCC'),
                                            edgecolor='black', label=f'CSU generate ({r_origin} CO$_2$)')
                         )
 
-                    fig_bar.legend(handles=custom_handles, loc='upper center', bbox_to_anchor=(0.5, 0.02),
-                                   ncol=min(6, len(custom_handles)), frameon=True, edgecolor='black',
+                    gen_handles = row1 + row2
+                    num_cols = 3
+                    num_rows = int(np.ceil(len(gen_handles) / num_cols))
+
+                    ordered_handles = []
+                    dummy_patch = mpatches.Patch(color='none', label=' ')
+
+                    for c in range(num_cols):
+                        for r in range(num_rows):
+                            idx = r * num_cols + c
+                            if idx < len(gen_handles):
+                                ordered_handles.append(gen_handles[idx])
+                            else:
+                                ordered_handles.append(dummy_patch)
+
+                    ordered_labels = [h.get_label() for h in ordered_handles]
+
+                    fig_bar.legend(ordered_handles, ordered_labels, loc='upper center', bbox_to_anchor=(0.5, 0.05),
+                                   ncol=3, frameon=True, edgecolor='black',
                                    fontsize=_fontsize)
 
                     plt.tight_layout(rect=[0, 0.12, 1, 1])
@@ -412,7 +611,7 @@ def generate_standard_plots(scenario_name):
             except Exception as e:
                 print(f"Skipping Figure 3. Error: {e}")
 
-        # ---------------- Figure 4: ETS vs Injected ----------------
+        # ---------------- Figure 4 & 4b: ETS vs Injected & Sector Bounds ----------------
         try:
             q_cap = pd.read_excel(result_path, sheet_name="q_CO2_cap")
             if "Scenario" in q_cap.columns: q_cap = q_cap.drop(columns=["Scenario"])
@@ -457,12 +656,93 @@ def generate_standard_plots(scenario_name):
 
                 if with_titles: fig.suptitle("Sectoral CO$_2$ Distribution", y=1.02, fontsize=_fontsize + 2)
                 handles, labels = axes[0, 0].get_legend_handles_labels()
-                fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 0.0), ncol=3, frameon=True)
+                # Added edgecolor='black' to the legend constraints
+                fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 0.0), ncol=3, frameon=True,
+                           edgecolor='black')
                 plt.tight_layout()
                 plt.savefig(os.path.join(dirs["ETS"], f"{fig_name}.pdf"), dpi=600, bbox_inches='tight')
                 plt.close(fig)
+
+                # ---------------- NEW Figure 4b: Sectoral Carbon Created vs Theoretical Max ----------------
+                df_max_cap = get_theoretical_max_capacity_df()
+
+                # Map sectors for merge so they align exactly
+                sector_mapping_ext = {"Industry_cement": "Cement", "Industry_chemicals": "Chemicals",
+                                      "Industry_iron_steel": "Iron & Steel", "Industry_other": "Other",
+                                      "Industry_refining": "Refining", "Power": "Power"}
+                df_max_cap["sector"] = df_max_cap["sector"].replace(sector_mapping_ext)
+
+                # Loop through 'Total' (all regions) and each individual region
+                for target_region in ["Total"] + DESIRED_REGION_ORDER:
+                    if target_region == "Total":
+                        df_frac_reg = df_frac.copy()
+                        df_max_reg = df_max_cap.copy()
+                        fig_title = "Aggregate Sectoral Carbon Created vs Max Capture Capacity (All Regions)"
+                        out_filename = "Figure4b_Sector_Max_Capacity_All.pdf"
+                    else:
+                        df_frac_reg = df_frac[df_frac["region"] == target_region].copy()
+                        df_max_reg = df_max_cap[df_max_cap["region"] == target_region].copy()
+                        fig_title = f"Sectoral Carbon Created vs Max Capture Capacity ({target_region})"
+                        out_filename = f"Figure4b_Sector_Max_Capacity_{target_region}.pdf"
+
+                    # Aggregate per sector (Total over the selected region filter)
+                    df_frac_sec = df_frac_reg.groupby(["sector", "year"])[
+                        ["value_cap", "value_ets", "total_co2"]].sum().reset_index()
+                    df_max_sec = df_max_reg.groupby(["sector", "year"])["max_cap_Mt"].sum().reset_index()
+
+                    # Merge and prepare for plotting
+                    df_sec_plot = pd.merge(df_frac_sec, df_max_sec, on=["sector", "year"], how="left").fillna(0)
+
+                    all_plot_sectors = sorted(df_sec_plot["sector"].unique())
+
+                    # Skip if there's no data for this specific region
+                    if not all_plot_sectors:
+                        continue
+
+                    num_cols = 3
+                    num_rows = (len(all_plot_sectors) + num_cols - 1) // num_cols
+                    fig_max, axes_max = plt.subplots(num_rows, num_cols, figsize=(11, 2.8 * num_rows), sharex=True)
+                    if num_rows == 1:
+                        axes_max = np.array([axes_max])
+                    axes_max_flat = axes_max.flatten()
+
+                    for idx, sector in enumerate(all_plot_sectors):
+                        ax = axes_max_flat[idx]
+                        df_sp = df_sec_plot[
+                            (df_sec_plot["sector"] == sector) & (df_sec_plot["year"] >= 2026)].sort_values("year")
+
+                        if not df_sp.empty:
+                            ax.stackplot(df_sp["year"], df_sp["value_cap"], df_sp["value_ets"],
+                                         labels=["Captured", "Uncaptured"], colors=["#ABC4AA", "#675D50"], alpha=0.8)
+                            ax.plot(df_sp["year"], df_sp["total_co2"], color="black", linestyle="--", linewidth=1.5,
+                                    label="Total Carbon Created")
+                            ax.plot(df_sp["year"], df_sp["max_cap_Mt"], color="red", linestyle="-", linewidth=2.0,
+                                    label="Theoretical Max Capture")
+
+                        ax.set_title(sector)
+                        ax.set_xlim(2025, 2041)
+                        ax.set_xticks(TARGET_YEARS)
+                        ax.grid(True, linestyle=":", alpha=0.6)
+                        if idx % num_cols == 0:
+                            ax.set_ylabel("MtCO$_2$")
+
+                    # Hide unused subplots
+                    for idx in range(len(all_plot_sectors), len(axes_max_flat)):
+                        axes_max_flat[idx].set_visible(False)
+
+                    if with_titles:
+                        fig_max.suptitle(fig_title, y=1.02, fontsize=_fontsize + 2)
+
+                    handles, labels = axes_max_flat[0].get_legend_handles_labels()
+                    fig_max.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 0.0), ncol=4, frameon=True,
+                                   edgecolor='black')
+
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(dirs["ETS"], out_filename), dpi=600, bbox_inches='tight')
+                    plt.close(fig_max)
+
         except Exception as e:
-            print(f"Skipping Figure 4x/z. Error: {e}")
+            print(f"Skipping Figure 4x/z/4b. Error: {e}")
 
         # ---------------- Figure: Market Clearing Price ----------------
         try:
@@ -497,41 +777,195 @@ def generate_standard_plots(scenario_name):
 
         # ---------------- Figure 5: Sankey ----------------
         try:
-            periods = {"2026-2030": (0, 2030), "2031-2035": (2031, 2035), "2036-2040": (2036, 2040)}
-            fig_market = make_subplots(rows=1, cols=3, subplot_titles=list(periods.keys()),
-                                       specs=[[{"type": "sankey"}] * 3])
-            node_indices = {r: idx for idx, r in enumerate(all_regions)}
-            node_colors = [REGION_COLOR_MAP.get(r, "#000000") for r in all_regions]
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+             # ---------------------------------------------------------
+            # 1. CONFIGURATION
+            # ---------------------------------------------------------
+            periods = {
+                "2026–2030": (2026, 2030),
+                "2031–2035": (2031, 2035),
+                "2036–2040": (2036, 2040),
+            }
 
-            for idx, (p_name, (y_start, y_end)) in enumerate(periods.items()):
-                b_prof = csu_buy[(csu_buy["year"] >= y_start) & (csu_buy["year"] <= y_end)]
-                s_prof = csu_sell[(csu_sell["year"] >= y_start) & (csu_sell["year"] <= y_end)]
-                net_pos = b_prof.groupby("region")["value"].sum() - s_prof.groupby("region")["value"].sum()
-                net_sellers, net_buyers = net_pos[net_pos < 0].abs(), net_pos[net_pos > 0]
-                tot_vol = net_buyers.sum()
-                source, target, values, link_colors = [], [], [], []
+            UNIT_DIVISOR = 1.0
+            MIN_FLOW_MT = 0.01
 
-                if tot_vol > 0:
-                    for seller, s_vol in net_sellers.items():
-                        for buyer, b_vol in net_buyers.items():
-                            f_vol = s_vol * (b_vol / tot_vol)
-                            if f_vol > 0.01:
-                                source.append(node_indices[seller])
-                                target.append(node_indices[buyer])
-                                values.append(f_vol)
-                                hx = REGION_COLOR_MAP[seller].lstrip('#')
-                                link_colors.append(
-                                    f"rgba({int(hx[0:2], 16)}, {int(hx[2:4], 16)}, {int(hx[4:6], 16)}, 0.4)")
+            REGION_ALIASES = {
+                "UK": "United Kingdom",
+                "United Kingdom": "United Kingdom",
+                "EU": "European Union - 27",
+                "EU27": "European Union - 27",
+                "EU-27": "European Union - 27",
+                "European Union": "European Union - 27",
+                "European Union-27": "European Union - 27",
+                "European Union - 27": "European Union - 27",
+                "NO": "Norway",
+            }
 
-                fig_market.add_trace(go.Sankey(node=dict(pad=20, thickness=20, label=all_regions, color=node_colors),
-                                               link=dict(source=source, target=target, value=values,
-                                                         color=link_colors)), row=1, col=idx + 1)
+            # ---------------------------------------------------------
+            # 2. PREPARE REGIONAL DATA AND COLORS
+            # ---------------------------------------------------------
+            def display_region(region):
+                return REGION_ALIASES.get(region, region)
 
-            fig_market.update_layout(title_text="Net Inter-Node CSU Market Flows" if with_titles else None,
-                                     font_size=12, width=1400, height=500)
-            fig_market.write_html(os.path.join(dirs["MKT"], "Figure5_Market_Flows.html"))
-        except Exception:
-            pass
+            def prepare_profile(df):
+                out = df.copy()
+                out["region"] = out["region"].map(display_region)
+                out["value"] = np.asarray(out["value"], dtype=float) / UNIT_DIVISOR
+                return out
+
+            buy_data = prepare_profile(csu_buy)
+            sell_data = prepare_profile(csu_sell)
+
+            all_regions_display = list(dict.fromkeys(display_region(r) for r in all_regions))
+            data_regions = set(buy_data["region"].dropna()) | set(sell_data["region"].dropna())
+            for region in sorted(data_regions):
+                if region not in all_regions_display:
+                    all_regions_display.append(region)
+
+            node_indices = {region: i for i, region in enumerate(all_regions_display)}
+
+            display_color_map = {}
+            for original_region, color in REGION_COLOR_MAP.items():
+                display_color_map[display_region(original_region)] = color
+
+            node_colors = [display_color_map.get(region, "#808080") for region in all_regions_display]
+
+            # ---------------------------------------------------------
+            # 3. CALCULATE NET POSITIONS FOR ALL THREE PERIODS
+            # ---------------------------------------------------------
+            period_results = {}
+
+            for period_name, (year_start, year_end) in periods.items():
+                buy_period = buy_data[buy_data["year"].between(year_start, year_end)]
+                sell_period = sell_data[sell_data["year"].between(year_start, year_end)]
+
+                buy_totals = buy_period.groupby("region")["value"].sum()
+                sell_totals = sell_period.groupby("region")["value"].sum()
+
+                net_position = buy_totals.sub(sell_totals, fill_value=0.0).reindex(all_regions_display, fill_value=0.0)
+
+                net_sellers = net_position[net_position < 0].abs()
+                net_buyers = net_position[net_position > 0]
+
+                total_exports = float(net_sellers.sum())
+                total_imports = float(net_buyers.sum())
+                total_market = min(total_exports, total_imports)
+
+                flows = []
+                if total_exports > 0 and total_imports > 0:
+                    for seller, export_volume in net_sellers.items():
+                        for buyer, import_volume in net_buyers.items():
+                            flow = min(export_volume, total_market) * (import_volume / total_imports)
+                            if flow >= MIN_FLOW_MT:
+                                flows.append({"seller": seller, "buyer": buyer, "value": float(flow)})
+
+                period_results[period_name] = {
+                    "net_position": net_position,
+                    "market": total_market,
+                    "flows": flows,
+                }
+
+            # ---------------------------------------------------------
+            # 4. CREATE THREE COMPARABLE SANKEY PANELS
+            # ---------------------------------------------------------
+            fig_market = make_subplots(
+                rows=1, cols=3,
+                specs=[[{"type": "sankey"} for _ in periods]],
+                horizontal_spacing=0.05
+            )
+
+            for panel_index, (period_name, _) in enumerate(periods.items(), start=1):
+                result = period_results[period_name]
+                flows = result["flows"]
+                net_position = result["net_position"]
+
+                sources, targets, values, link_colors = [], [], [], []
+
+                for flow in flows:
+                    seller, buyer, volume = flow["seller"], flow["buyer"], flow["value"]
+                    sources.append(node_indices[seller])
+                    targets.append(node_indices[buyer])
+                    values.append(volume)
+
+                    # Link color matching seller
+                    hex_color = display_color_map.get(seller, "#808080").lstrip("#")
+                    try:
+                        link_colors.append(
+                            f"rgba({int(hex_color[0:2], 16)},{int(hex_color[2:4], 16)},{int(hex_color[4:6], 16)},0.4)")
+                    except:
+                        link_colors.append("rgba(128,128,128,0.4)")
+
+                # Generate unique node labels for THIS specific period showing exact volumes statically
+                period_node_labels = []
+                for r in all_regions_display:
+                    val = net_position.get(r, 0.0)
+                    if abs(val) >= 0.01:
+                        period_node_labels.append(f"{r}<br>({abs(val):.1f} Mt)")
+                    else:
+                        period_node_labels.append(r)
+
+                # Let Plotly auto-align nodes natively so they sit flat/level on a horizontal plane
+                fig_market.add_trace(
+                    go.Sankey(
+                        orientation="h",
+                        valueformat=",.1f",
+                        node=dict(
+                            label=period_node_labels,
+                            color=node_colors,
+                            pad=30,  # Increased padding to ensure space between parallel nodes
+                            thickness=20,
+                        ),
+                        link=dict(
+                            source=sources,
+                            target=targets,
+                            value=values,
+                            color=link_colors,
+                        ),
+                    ),
+                    row=1, col=panel_index,
+                )
+
+                # -----------------------------------------------------
+                # 5. PANEL ANNOTATIONS: TITLES
+                # -----------------------------------------------------
+                panel_center_x = (panel_index - 0.5) / 3
+
+                # Header with Period and Total Market
+                fig_market.add_annotation(
+                    x=panel_center_x, y=1.08, xref="paper", yref="paper",
+                    text=f"<b>{period_name}</b><br>Net Market: {result['market']:,.1f} Mt CSU",
+                    showarrow=False, align="center", font=dict(size=14)
+                )
+
+            # ---------------------------------------------------------
+            # 6. FINAL LAYOUT AND EXPORT (HTML & PDF)
+            # ---------------------------------------------------------
+            fig_market.update_layout(
+                title=dict(text="Net Inter-Node CSU Market Flows" if with_titles else "", x=0.5),
+                font=dict(size=12),
+                width=1600,
+                height=500,  # Reduced height for a more compact and balanced horizontal look
+                margin=dict(l=30, r=30, t=120, b=50),  # Adjusted margins to remove empty space
+                plot_bgcolor="white", paper_bgcolor="white"
+            )
+
+            # Save interactive HTML
+            html_path = os.path.join(dirs["MKT"], "Figure5_Market_Flows.html")
+            fig_market.write_html(html_path)
+
+            # Save static PDF for the paper (Requires `pip install kaleido`)
+            pdf_path = os.path.join(dirs["MKT"], "Figure5_Market_Flows.pdf")
+            try:
+                fig_market.write_image(pdf_path, format="pdf", engine="kaleido")
+                print(f"Figure 5 saved to: {pdf_path}")
+            except Exception as e:
+                print(
+                    f"HTML saved, but could not save PDF. Ensure 'kaleido' is installed (pip install -U kaleido). Error: {e}")
+
+        except Exception as e:
+            print(f"Failed to generate Figure 5: {e}")
 
         print(f"  -> Generated {folder_suffix} in {output_dir}")
 
@@ -542,7 +976,6 @@ def generate_standard_plots(scenario_name):
 def create_co2_price_plot():
     script_directory = os.path.dirname(os.path.abspath(__file__))
 
-    # 1. Calculate the trajectories
     scenario_trajectories = {}
     years = np.arange(2026, 2051)
 
@@ -562,14 +995,12 @@ def create_co2_price_plot():
 
         scenario_trajectories[start_year] = pd.Series(prices, index=years)
 
-    # 2. Plotting Setup
     fig, ax = plt.subplots(figsize=(6.0, 4.0))
     output_trajectories = {}
 
     for start_year in sorted(scenario_trajectories.keys()):
         trajectory = scenario_trajectories[start_year]
 
-        # Scenario labels
         if start_year == 2030:
             lbl = "Target ETS Pathway"
         elif start_year == 2035:
@@ -586,7 +1017,6 @@ def create_co2_price_plot():
         col_name = lbl
         output_trajectories[col_name] = trajectory
 
-        # Line plot without scatter markers
         ax.plot(
             trajectory.index,
             trajectory.values,
@@ -612,7 +1042,6 @@ def create_co2_price_plot():
     print(f"Saved CO2 price trajectory plot: {plot_path}")
     plt.close(fig)
 
-    # 3. Export data as DataFrame and Excel
     df_output = pd.DataFrame(output_trajectories)
     df_output.index.name = "Year"
 
@@ -672,15 +1101,12 @@ def plot_sensitivity_group(prefix, incline_years, colors_map, title, out_filenam
 
 def plot_total_capture_comparison(incline_years, output_dir="figures_sensitivity"):
     os.makedirs(output_dir, exist_ok=True)
-
     data = []
 
-    # 1. Gather Total Cumulative Capture Data (2026-2040)
     for y in incline_years:
         dw = get_capture_data(f"With_Club_ets_incline_start_year_{y}")
         dwo = get_capture_data(f"Without_Club_ets_incline_start_year_{y}")
 
-        # Sum from 2026 to 2040 inclusive
         sum_w = dw[(dw.index >= 2026) & (dw.index <= 2040)].sum() if dw is not None else 0
         sum_wo = dwo[(dwo.index >= 2026) & (dwo.index <= 2040)].sum() if dwo is not None else 0
 
@@ -695,24 +1121,18 @@ def plot_total_capture_comparison(incline_years, output_dir="figures_sensitivity
         print("Skipping total capture plot: No capture data found.")
         return
 
-    # Colors exactly as requested
-    c_with = '#2A9D8F'  # Teal
-    c_without = '#E76F51'  # Orange-Red
+    c_with = '#2A9D8F'
+    c_without = '#E76F51'
 
-    # 2. Setup the single plot (no subplots)
     fig, ax = plt.subplots(figsize=(9, 5.5))
-
     x = np.arange(len(incline_years))
     width = 0.35
 
-    # 3. Plot grouped bars (Z-order 3 puts them in front of the grid)
     ax.bar(x - width / 2, df["With"], width, label='w/ club',
            color=c_with, edgecolor='black', linewidth=1, zorder=3)
-
     ax.bar(x + width / 2, df["Without"], width, label='w/o club',
            color=c_without, edgecolor='black', linestyle='--', linewidth=1.5, zorder=3)
 
-    # 4. Map Labels
     x_labels = []
     for y in incline_years:
         if y == 2030:
@@ -728,7 +1148,6 @@ def plot_total_capture_comparison(incline_years, output_dir="figures_sensitivity
         else:
             x_labels.append(f"Inc. {y}")
 
-    # 5. Add text labels directly on top of the bars with exact amounts
     max_val = max(df["With"].max(), df["Without"].max())
     y_offset = max_val * 0.02
 
@@ -741,22 +1160,16 @@ def plot_total_capture_comparison(incline_years, output_dir="figures_sensitivity
         ax.text(x[i] + width / 2, val_wo + y_offset,
                 f"{val_wo:.0f}", ha='center', va='bottom', fontsize=10, fontweight='bold', color=c_without)
 
-        # 6. Formatting
         ax.set_ylabel("Cumulative Captured CO$_2$ (MtCO$_2$)", fontsize=_fontsize)
         ax.set_xticks(x)
-        # CHANGED: ha="right" makes the rotated text align properly with the tick marks
         ax.set_xticklabels(x_labels, rotation=45, ha="right", fontsize=_fontsize)
-
-        # Add headroom to the Y-axis so the text labels don't get clipped by the ceiling
         ax.set_ylim(0, max_val * 1.15)
         ax.grid(True, linestyle=":", alpha=0.6, axis='y', zorder=0)
 
-        # 7. Shared Legend (Centered below the x-axis)
         custom_handles = [
             mpatches.Patch(facecolor=c_with, edgecolor='black', label='w/ club'),
             mpatches.Patch(facecolor=c_without, edgecolor='black', linestyle='--', linewidth=1.5, label='w/o club')
         ]
-        # CHANGED: Adjusted bbox_to_anchor from -0.15 to -0.30 to clear the rotated labels
         ax.legend(handles=custom_handles, loc='upper center', bbox_to_anchor=(0.5, -0.30),
                   ncol=2, frameon=True, edgecolor='black', fontsize=_fontsize)
 
@@ -765,14 +1178,12 @@ def plot_total_capture_comparison(incline_years, output_dir="figures_sensitivity
     plt.savefig(plot_path, dpi=600, bbox_inches='tight')
     plt.close()
 
-    print(f"  -> Saved total capture plot to: {plot_path}")
 
 def plot_club_capture_comparison(incline_years, output_dir="figures_sensitivity"):
     os.makedirs(output_dir, exist_ok=True)
     periods = ["2026-2030", "2031-2035", "2036-2040"]
     data = []
 
-    # 1. Gather Cumulative Capture Data
     for y in incline_years:
         dw = get_capture_data(f"With_Club_ets_incline_start_year_{y}")
         dwo = get_capture_data(f"Without_Club_ets_incline_start_year_{y}")
@@ -791,16 +1202,11 @@ def plot_club_capture_comparison(incline_years, output_dir="figures_sensitivity"
 
     df = pd.DataFrame(data)
     if df.empty or df["With"].sum() == 0 and df["Without"].sum() == 0:
-        print("Skipping club capture comparison: No capture data found.")
         return
 
-    # Colors
-    c_with = '#2A9D8F'  # Teal
-    c_without = '#E76F51'  # Orange-Red
+    c_with = '#2A9D8F'
+    c_without = '#E76F51'
 
-    # ---------------------------------------------------------
-    # Figure A: Compact Bar Chart (1xN Subplots for each Scenario)
-    # ---------------------------------------------------------
     num_scenarios = len(incline_years)
     fig, axes = plt.subplots(1, num_scenarios, figsize=(2.8 * num_scenarios, 4.5), sharey=True)
     if num_scenarios == 1: axes = [axes]
@@ -812,13 +1218,10 @@ def plot_club_capture_comparison(incline_years, output_dir="figures_sensitivity"
         ax = axes[i]
         df_sub = df[df["Incline"] == y]
 
-        # Bars
         ax.bar(x - width / 2, df_sub["With"], width, label='w/ club', color=c_with, edgecolor='black', linewidth=1)
-        # Without club has a dashed edge pattern
         ax.bar(x + width / 2, df_sub["Without"], width, label='w/o club', color=c_without,
                edgecolor='black', linestyle='--', linewidth=1.5)
 
-        # Map labels
         if y == 2030:
             lbl = "Target ETS Pathway"
         elif y == 2035:
@@ -836,11 +1239,9 @@ def plot_club_capture_comparison(incline_years, output_dir="figures_sensitivity"
         ax.set_xticks(x)
         ax.set_xticklabels(periods, rotation=45, ha="right")
         ax.grid(True, linestyle=":", alpha=0.6, axis='y')
-
         if i == 0:
             ax.set_ylabel("Cumulative Captured CO$_2$ (MtCO$_2$)")
 
-    # Shared Legend below figure
     custom_handles = [
         mpatches.Patch(facecolor=c_with, edgecolor='black', label='w/ club'),
         mpatches.Patch(facecolor=c_without, edgecolor='black', linestyle='--', linewidth=1.5,
@@ -853,11 +1254,6 @@ def plot_club_capture_comparison(incline_years, output_dir="figures_sensitivity"
     plt.savefig(os.path.join(output_dir, "Captured_CO2_Comparison_Bars.pdf"), dpi=600, bbox_inches='tight')
     plt.close()
 
-    # ---------------------------------------------------------
-    # Figure B: Delta Diverging Bar Chart (4x1: 3 Periods + 1 Total)
-    # ---------------------------------------------------------
-
-    # 1. Calculate the total offset across 2026-2040 for each scenario
     total_data = []
     for y in incline_years:
         df_y = df[df["Incline"] == y]
@@ -871,11 +1267,9 @@ def plot_club_capture_comparison(incline_years, output_dir="figures_sensitivity"
     df_total = pd.DataFrame(total_data)
     df_extended = pd.concat([df, df_total], ignore_index=True)
 
-    # 2. Setup a 4x1 vertical grid
     plot_periods = ["2026-2030", "2031-2035", "2036-2040", "Total (2026-2040)"]
     fig2, axes2 = plt.subplots(4, 1, figsize=(8.5, 12), sharex=True)
 
-    # Map the better, descriptive labels
     x_labels = []
     for y in incline_years:
         if y == 2030:
@@ -896,28 +1290,19 @@ def plot_club_capture_comparison(incline_years, output_dir="figures_sensitivity"
     for i, p in enumerate(plot_periods):
         ax = axes2[i]
         df_sub = df_extended[df_extended["Period"] == p]
-
-        # Determine colors: Teal for positive, Red for negative, Black for 0
         colors = [c_with if val > 0 else c_without if val < 0 else 'black' for val in df_sub["Delta"]]
-
-        # Plot Diverging Bars
         bars = ax.bar(x_pos, df_sub["Delta"], width=0.5, color=colors, edgecolor='black', zorder=3)
-
-        # Bold Zero Line
         ax.axhline(0, color='black', linewidth=1.5, zorder=4)
 
-        # Auto-scale Y-axis symmetrically so the 0-line stays centered
         max_abs_val = max(abs(df_sub["Delta"].max()), abs(df_sub["Delta"].min()))
         y_lim = max_abs_val * 1.35 if max_abs_val != 0 else 1
         ax.set_ylim(-y_lim, y_lim)
 
-        # Add exact values above/below the bars
         for bar in bars:
             val = bar.get_height()
             y_offset = y_lim * 0.08 if val >= 0 else -y_lim * 0.08
 
             if val == 0:
-                # Black 0.0 if there is no delta
                 ax.text(bar.get_x() + bar.get_width() / 2, y_offset,
                         "0.0", ha='center', va='bottom', fontsize=10,
                         color='black', fontweight='bold')
@@ -927,18 +1312,15 @@ def plot_club_capture_comparison(incline_years, output_dir="figures_sensitivity"
                         f"{val:+.1f}", ha='center', va=va, fontsize=10,
                         color=c_with if val > 0 else c_without, fontweight='bold')
 
-        # Formatting
         is_total = "Total" in p
         ax.set_title(f"{p}", fontsize=_fontsize + (2 if is_total else 0),
                      fontweight='bold' if is_total else 'normal')
         ax.set_ylabel("$\Delta$ CO$_2$\n(MtCO$_2$)")
         ax.grid(True, linestyle=":", alpha=0.6, axis='y', zorder=0)
 
-    # Set custom X-axis labels on the bottom-most plot
     axes2[-1].set_xticks(x_pos)
     axes2[-1].set_xticklabels(x_labels, rotation=45, ha="center")
 
-    # Shared Legend (Replacing the text boxes)
     custom_handles = [
         mpatches.Patch(facecolor=c_with, edgecolor='black', label='Higher w/ Club'),
         mpatches.Patch(facecolor=c_without, edgecolor='black', label='Higher w/o Club')
@@ -946,9 +1328,10 @@ def plot_club_capture_comparison(incline_years, output_dir="figures_sensitivity"
     fig2.legend(handles=custom_handles, loc='upper center', bbox_to_anchor=(0.5, 0.02), ncol=2,
                 frameon=True, edgecolor='black', fontsize=_fontsize)
 
-    plt.tight_layout(rect=[0, 0.04, 1, 1])  # Slightly raised bottom rect to fit legend
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
     plt.savefig(os.path.join(output_dir, "Captured_CO2_Delta_Bars.pdf"), dpi=600, bbox_inches='tight')
     plt.close()
+
 
 def plot_combined_sensitivity(incline_years, colors_map, output_dir="figures_sensitivity"):
     os.makedirs(output_dir, exist_ok=True)
@@ -958,32 +1341,24 @@ def plot_combined_sensitivity(incline_years, colors_map, output_dir="figures_sen
     for y in incline_years:
         color = colors_map.get(y, 'black')
         linewidth = 2.5 if y == 2030 else 1.5
-
-        # With Club
         dw = get_capture_data(f"With_Club_ets_incline_start_year_{y}")
         if dw is not None:
             ax.plot(dw.index, dw.values, color=color, linestyle="-", linewidth=linewidth)
-
-        # Without Club
         dwo = get_capture_data(f"Without_Club_ets_incline_start_year_{y}")
         if dwo is not None:
             ax.plot(dwo.index, dwo.values, color=color, linestyle="--", linewidth=linewidth)
 
-    # Removed the title as requested
     ax.set_ylabel("Total Captured CO$_2$ (MtCO$_2$)")
     ax.set_xticks(TARGET_YEARS)
     ax.grid(True, linestyle=":", alpha=0.6)
 
-    # 1. Legend elements for Line Styles (Below Plot)
     style_elements = [
         mlines.Line2D([0], [0], color='black', lw=2.0, linestyle='-', label='w/ club'),
         mlines.Line2D([0], [0], color='black', lw=2.0, linestyle='--', label='w/o club '),
     ]
 
-    # 2. Legend elements for Colors (Inside Plot, Top Left)
     color_elements = []
     for y in incline_years:
-        # Renaming scenarios based on the year
         if y == 2030:
             lbl = "Target ETS Pathway"
         elif y == 2035:
@@ -1002,7 +1377,6 @@ def plot_combined_sensitivity(incline_years, colors_map, output_dir="figures_sen
             mlines.Line2D([0], [0], color=colors_map.get(y, 'black'), lw=linewidth, label=lbl)
         )
 
-    # Add Color Legend (Top Left)
     color_legend = ax.legend(
         handles=color_elements,
         loc="upper left",
@@ -1010,15 +1384,13 @@ def plot_combined_sensitivity(incline_years, colors_map, output_dir="figures_sen
         edgecolor="black",
         fontsize=_fontsize
     )
-    # Add it to the axes manually so the next legend call doesn't overwrite it
     ax.add_artist(color_legend)
 
-    # Add Style Legend (Below Plot)
     ax.legend(
         handles=style_elements,
-        bbox_to_anchor=(0.5, -0.12),  # Centers it below the x-axis
+        bbox_to_anchor=(0.5, -0.12),
         loc="upper center",
-        ncol=2,  # Splits items into two columns
+        ncol=2,
         frameon=True,
         edgecolor="black",
         fontsize=_fontsize
@@ -1033,11 +1405,9 @@ def plot_combined_sensitivity(incline_years, colors_map, output_dir="figures_sen
 # 4. Execution
 # ==========================================
 if __name__ == "__main__":
-
     print("\n--- Generating CO2 Price Trajectories ---")
     create_co2_price_plot()
 
-    # Generate Standard Plots for all Base Cases
     for scenario in ["With_Club_ets_incline_start_year_2030", "Without_Club_ets_incline_start_year_2030"]:
         generate_standard_plots(scenario)
 
@@ -1060,10 +1430,7 @@ if __name__ == "__main__":
     )
 
     plot_combined_sensitivity(INCLINE_YEARS, INCLINE_COLORS)
-
-    # NEW CALL: Plots Figure A (Bars) and Figure B (Delta Lines)
     plot_club_capture_comparison(INCLINE_YEARS)
-
     plot_total_capture_comparison(INCLINE_YEARS)
 
     print("\nAll plotting tasks completed successfully.")

@@ -81,6 +81,16 @@ def build_base_model(data_dict):
         doc="Domestic NG usage or external imports by sector"
     )
 
+    m.Q_commited_cap = pyo.Param(
+        m.region,
+        m.sector,
+        m.tech,
+        m.y,
+        initialize=data_dict.get("Q_commited_cap", {}),
+        default=0.0,
+        doc="Committed new capacity additions per year based on project pipeline (until 2035)",
+    )
+
     m.mu = pyo.Param(
         m.sector,
         m.tech,

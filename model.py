@@ -193,9 +193,14 @@ def apply_constraints(m, discount_rate=0.05):
 
     @m.Constraint(m.region, m.sector, m.tech, m.y_tilde)
     def cap_exp_limit(m, i, s, k, t):
-        return m.Q_new[i, s, k, t] - m.Q_new[i, s, k, t - 1] <= m.Q_delta_abs[
-            i, s, k
-        ] + (m.Q_IR_cap[i, s, k] * m.Q_new[i, s, k, t - 1])
+        if t <= 2035:
+            # Prior to 2035 (inclusive), new capacity additions are limited by the committed pipeline
+            return m.Q_new[i, s, k, t] <= m.Q_commited_cap[i, s, k, t]
+        else:
+            # After 2035, the annual build rate can grow, constrained by max absolute jump + relative growth of the previous year's build rate
+            return m.Q_new[i, s, k, t] - m.Q_new[i, s, k, t - 1] <= m.Q_delta_abs[
+                i, s, k
+            ] + (m.Q_IR_cap[i, s, k] * m.Q_new[i, s, k, t - 1])
 
     # ==========================================
     # IDLE CAPACITY EQUATIONS

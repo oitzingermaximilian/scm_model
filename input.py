@@ -29,18 +29,15 @@ def prepare_model_data(raw_data):
     model_data["y"] = df_ts.index.tolist()
 
     # --- FIX FOR SCENARIOS ---
-    # 1. Check for g_SCENARIO, default to base 'g' if not present
     if "g_SCENARIO" not in df_ts.columns:
         df_ts["g_SCENARIO"] = df_ts["g"]
 
-    # 2. Extract into model_data using g_SCENARIO
     model_data["g"] = {y: round(float(df_ts.at[y, "g_SCENARIO"]), 3) for y in model_data["y"]}
 
     model_data["psi"] = {
         y: round(float(df_ts.at[y, "psi"]), 3) for y in model_data["y"]
     }
 
-    # 3. Check for ets_SCENARIO, default to 'c_ets_mid' if not present
     if "ets_SCENARIO" not in df_ts.columns:
         df_ts["ets_SCENARIO"] = df_ts["c_ets_mid"]
 
@@ -144,16 +141,11 @@ def prepare_model_data(raw_data):
     df_sinks["storage_type"] = df_sinks["storage_type"].astype(str).str.strip()
     df_sinks["stage_id"] = df_sinks["stage_id"].fillna(1).astype(int)
 
-    # ---------------------------------------------------------
-    # CRITICAL FIX: Create a unique ID for Pyomo by combining columns
-    # e.g., "Bifrost" + 1 -> "Bifrost_S1"
-    # ---------------------------------------------------------
     df_sinks["unique_block_id"] = df_sinks["block_id"] + "_S" + df_sinks["stage_id"].astype(str)
 
     for col in ["max_injection_yr", "max_capacity"]:
         df_sinks[col] = df_sinks[col].astype(str).str.replace(" ", "").astype(float)
 
-    # Give Pyomo the UNIQUE IDs for its Set, not the original duplicates!
     model_data["sink_blocks"] = df_sinks["unique_block_id"].unique().tolist()
     model_data["storage_types"] = df_sinks["storage_type"].unique().tolist()
 
@@ -171,10 +163,8 @@ def prepare_model_data(raw_data):
     )
 
     for _, row in df_sinks.iterrows():
-        # Use the artificially created unique ID for all dictionary keys!
         b_unique = row["unique_block_id"]
-
-        b_parent = row["block_id"]  # We keep the original name just for the parent link
+        b_parent = row["block_id"]
         i = row["region_i"]
         stage = row["stage_id"]
 
@@ -182,8 +172,6 @@ def prepare_model_data(raw_data):
         dict_sink_timedelay[(i, b_unique)] = int(row["timedelay_td"])
         dict_sink_inj_rate[(i, b_unique)] = row["max_injection_yr"]
         dict_sink_cap[(i, b_unique)] = row["max_capacity"]
-
-        # Store the stage and parent info using the unique ID
         dict_sink_stage[(i, b_unique)] = stage
         dict_sink_parent[(i, b_unique)] = b_parent
 
@@ -194,7 +182,6 @@ def prepare_model_data(raw_data):
             unit_capex = float(row[f"capex_{app_year}"])
             unit_opex = float(row[f"opex_{app_year}"])
 
-            # Create CAPEX and OPEX using the unique ID
             dict_sink_capex[(i, b_unique, t)] = round(unit_capex * row["max_capacity"], 3)
             dict_sink_opex[(i, b_unique, t)] = round(unit_opex, 3)
 
@@ -208,7 +195,7 @@ def prepare_model_data(raw_data):
     model_data["sink_parent"] = dict_sink_parent
 
     # ==========================================
-    # 4. Process "ng_flows" Sheet (with Disaggregation)
+    # 4. Process "ng_flows" Sheet
     # ==========================================
     df_ng = raw_data["ng_flows"]
 
@@ -218,28 +205,27 @@ def prepare_model_data(raw_data):
     df_ng["year"] = df_ng["year"].astype(int)
     df_ng["ng_volume"] = pd.to_numeric(df_ng["ng_volume"], errors="coerce").fillna(0.0)
 
-    # Industrial sub-sector split weights by region
     industry_splits = {
         "EU27": {
-            "Industry_cement": 0.0727,  # 7.27%
-            "Industry_iron_steel": 0.0877,  # 8.77%
-            "Industry_chemicals": 0.2161,  # 21.61%
-            "Industry_refining": 0.0863,  # 8.63% (Now included!)
-            "Industry_other": 0.5372  # 53.72%
+            "Industry_cement": 0.0727,
+            "Industry_iron_steel": 0.0877,
+            "Industry_chemicals": 0.2161,
+            "Industry_refining": 0.0863,
+            "Industry_other": 0.5372
         },
         "UK": {
-            "Industry_cement": 0.0849,      # 8.49% (50% of Mineral products: 6,284 / 73,989)
-            "Industry_iron_steel": 0.0516,  # 5.16% (3,818 / 73,989)
-            "Industry_chemicals": 0.1221,   # 12.21% (9,034 / 73,989)
-            "Industry_refining": 0.0662,    # 6.62% (Petroleum refineries energy use: 4,900 / 73,989)
-            "Industry_other": 0.6751        # 67.51% (Remaining manufacturing, food, paper, construction, etc.)
+            "Industry_cement": 0.0849,
+            "Industry_iron_steel": 0.0516,
+            "Industry_chemicals": 0.1221,
+            "Industry_refining": 0.0662,
+            "Industry_other": 0.6751
         },
         "NO": {
-            "Industry_cement": 0.1010,      # 10.10% (50% of Non-metallic minerals: 252.06 / 2495.14)
-            "Industry_iron_steel": 0.0136,  # 1.36% (34.05 / 2495.14)
-            "Industry_chemicals": 0.2952,   # 29.52% (736.67 / 2495.14)
-            "Industry_refining": 0.0011,    # 0.11% (Refineries energy use: 2.83 / 2495.14)
-            "Industry_other": 0.5890        # 58.90% (Rest: Food, paper, non-ferrous metals, construction, etc.)
+            "Industry_cement": 0.1010,
+            "Industry_iron_steel": 0.0136,
+            "Industry_chemicals": 0.2952,
+            "Industry_refining": 0.0011,
+            "Industry_other": 0.5890
         }
     }
 
@@ -252,9 +238,7 @@ def prepare_model_data(raw_data):
         vol = float(row["ng_volume"])
 
         if sec.lower() == "industry":
-            # Get the splits for the specific region, fallback to EU27 if missing
             region_splits = industry_splits.get(i, industry_splits["EU27"])
-
             for sub_sec, frac in region_splits.items():
                 raw_ng_lookup[(i, j, sub_sec, yr)] = (
                         raw_ng_lookup.get((i, j, sub_sec, yr), 0.0) + vol * frac
@@ -316,9 +300,7 @@ def prepare_model_data(raw_data):
 
     model_data["c_trans"] = dict_c_trans
 
-    # --- THE FIXED LOOP ---
     for _, row in df_sinks.iterrows():
-        # CRITICAL: Must use unique_block_id here too!
         b_unique = row["unique_block_id"]
         i = row["region_i"]
         storage_type = row["storage_type"].lower()
@@ -332,10 +314,7 @@ def prepare_model_data(raw_data):
         for t in model_data["y"]:
             past_years = [y for y in known_sink_years if y <= t]
             app_year = max(past_years) if past_years else min(known_sink_years)
-
             base_opex = float(row[f"opex_{app_year}"])
-
-            # Write to the dictionary using b_unique
             dict_sink_opex[(i, b_unique, t)] = round(base_opex + transport_tariff, 3)
 
     model_data["c_sink_opex"] = dict_sink_opex
@@ -366,6 +345,50 @@ def prepare_model_data(raw_data):
     model_data["Q_init"] = dict_q_init
     model_data["Q_delta_abs"] = dict_q_delta_abs
     model_data["Q_IR_cap"] = dict_q_ir_cap
+
+    # ==========================================
+    # 7. Process "cc_commited_cap" Sheet
+    # ==========================================
+    if "cc_commited_cap" in raw_data:
+        df_commit = raw_data["cc_commited_cap"].copy()
+
+        # Format setup: ensure Year is index
+        if "Year" in df_commit.columns:
+            df_commit = df_commit.set_index("Year")
+        elif "year" in df_commit.columns:
+            df_commit = df_commit.set_index("year")
+
+        dict_q_commited = {}
+
+        # Maps to align the pasted columns with Pyomo Model indices
+        reg_map = {"EU": "EU27", "UK": "UK", "NO": "NO", "EU27": "EU27"}
+        sec_map = {
+            "psc_cement": "Industry_cement",
+            "psc_iron_steel": "Industry_iron_steel",
+            "psc_chemicals": "Industry_chemicals",
+            "psc_refining": "Industry_refining",
+            "psc_power": "Power",
+            "psc_otherindustry": "Industry_other"
+        }
+
+        # Process the pivoted columns (e.g. "EU|psc_cement")
+        for col in df_commit.columns:
+            if "|" in str(col):
+                reg_raw, tech_raw = str(col).split("|")
+                reg = reg_map.get(reg_raw.strip(), reg_raw.strip())
+                tech = tech_raw.strip()
+                sec = sec_map.get(tech, tech)
+
+                # Assign values year by year
+                for yr, val in df_commit[col].items():
+                    try:
+                        yr_int = int(yr)
+                        if yr_int in model_data["y"]:
+                            dict_q_commited[(reg, sec, tech, yr_int)] = float(val)
+                    except (ValueError, TypeError):
+                        continue  # Skip invalid rows
+
+        model_data["Q_commited_cap"] = dict_q_commited
 
     return model_data
 
@@ -441,9 +464,24 @@ def export_model_data_to_excel(model_data, output_path="model_verification_outpu
             })
         pd.DataFrame(exp_list).to_excel(writer, sheet_name="cc_expansion_limits", index=False)
 
+        # 9. Committed Capacity (New Output for Verification)
+        if "Q_commited_cap" in model_data:
+            commit_list = []
+            for (i, s, k, t), val in model_data["Q_commited_cap"].items():
+                commit_list.append({
+                    "region": i,
+                    "sector": s,
+                    "technology": k,
+                    "year": t,
+                    "commited_cap": val
+                })
+            pd.DataFrame(commit_list).to_excel(writer, sheet_name="cc_commited_cap_out", index=False)
+
     print(f"Successfully exported verified model data to: {output_path}")
 
+
 # Execution
-raw = load_data()
-model_data = prepare_model_data(raw)
-export_model_data_to_excel(model_data)
+if __name__ == "__main__":
+    raw = load_data()
+    model_data = prepare_model_data(raw)
+    export_model_data_to_excel(model_data)
